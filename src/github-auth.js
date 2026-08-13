@@ -5,6 +5,14 @@ const API_VERSION = '2026-03-10';
 let memoryToken = '';
 
 
+
+function savedTokenFileUrl(config = CONFIG) {
+  const owner = encodeURIComponent(config.githubOwner || '');
+  const repo = encodeURIComponent(config.githubRepo || '');
+  const branch = encodeURIComponent(config.githubBranch || 'main');
+  return `https://github.com/${owner}/${repo}/blob/${branch}/TRACKER_TOKEN.txt`;
+}
+
 function fineGrainedTokenUrl(config = CONFIG) {
   const params = new URLSearchParams({
     name: 'Fitness Tracker',
@@ -119,4 +127,5 @@ export {
   githubFetch,
   normalizeToken,
   fineGrainedTokenUrl,
+  savedTokenFileUrl,
 };

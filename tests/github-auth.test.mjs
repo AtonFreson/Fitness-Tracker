@@ -36,3 +36,16 @@ test('fine-grained token link pre-fills only the safe GitHub fields', async () =
   assert.equal(url.searchParams.get('expires_in'), 'none');
   assert.equal(url.searchParams.has('token'), false);
 });
+
+test('saved token link points at the private repository token file', async () => {
+  const { savedTokenFileUrl } = await import('../src/github-auth.js');
+  assert.equal(
+    savedTokenFileUrl({
+      githubOwner: 'example-user',
+      githubRepo: 'Fitness-Tracker-Data',
+      githubBranch: 'main',
+      dataRoot: 'data',
+    }),
+    'https://github.com/example-user/Fitness-Tracker-Data/blob/main/TRACKER_TOKEN.txt',
+  );
+});

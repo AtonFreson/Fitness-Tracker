@@ -10,7 +10,7 @@ A phone-friendly health and fitness tracker hosted through GitHub Pages, with da
 - Traditional Strength Training imports with heart-rate and active-energy summaries when available
 - Automatic upload/source detection
 - Append-only storage in a private GitHub repository
-- Browser access using a fine-grained GitHub token
+- Browser access using a fine-grained GitHub token saved in the private data repository
 
 More visualisation and general Apple Health functionality will be added later.
 
@@ -22,7 +22,7 @@ The project uses two repositories:
 
 Detailed setup instructions are kept with the private repository template instead of cluttering this README. Extract [`Fitness-Tracker-Data-Starter.zip`](Fitness-Tracker-Data-Starter.zip) and follow its `README.md`.
 
-The tracker itself includes a link to GitHub's token page when a browser needs access. There is no separate login server to configure.
+The tracker links to `TRACKER_TOKEN.txt` in the private repository when a new browser needs access. Initial token creation and the security tradeoff are documented in the private starter README; there is no separate login server to configure.
 
 ## Sharing
 To share the complete project/setup:

@@ -17,6 +17,7 @@ import {
   getAuthenticatedUser,
   hasStoredAuth,
   fineGrainedTokenUrl,
+  savedTokenFileUrl,
 } from './src/github-auth.js';
 
 const $ = (selector) => document.querySelector(selector);
@@ -278,8 +279,12 @@ function showAuthGate(message = '') {
   $('#auth-status').textContent = message;
   const problems = configProblems();
   $('#connect-github').disabled = problems.length > 0;
+  $('#saved-token-link').classList.toggle('disabled-link', problems.length > 0);
   $('#create-token-link').classList.toggle('disabled-link', problems.length > 0);
-  if (!problems.length) $('#create-token-link').href = fineGrainedTokenUrl(CONFIG);
+  if (!problems.length) {
+    $('#saved-token-link').href = savedTokenFileUrl(CONFIG);
+    $('#create-token-link').href = fineGrainedTokenUrl(CONFIG);
+  }
   $('#setup-problems').hidden = problems.length === 0;
   $('#setup-problems').innerHTML = problems.map((x) => `<div class="warning">${escapeHtml(x)}</div>`).join('');
 }
@@ -336,7 +341,7 @@ async function bootstrapAuth() {
     return;
   }
   if (!hasStoredAuth()) {
-    showAuthGate('Create a token on GitHub for this browser, then paste it below.');
+    showAuthGate('Open the saved token in your private GitHub repository, copy it, then paste it below.');
     return;
   }
   $('#auth-status').textContent = 'Connecting to GitHub…';

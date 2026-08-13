@@ -15,14 +15,14 @@
       <div class="lock-mark" aria-hidden="true">🏋️</div>
       <p class="eyebrow">Private GitHub data</p>
       <h1 class="gate-title">Fitness Tracker</h1>
-      <p>The public Pages site contains the app only; measurements and workouts live in your configured <strong>private GitHub repository</strong>. Each browser needs a GitHub token once.</p>
+      <p>The public Pages site contains the app only; measurements and workouts live in your configured <strong>private GitHub repository</strong>. The access token is kept in a private file there so another device only needs your normal GitHub login.</p>
       <div id="setup-problems" hidden></div>
 
       <div class="token-setup">
-        <p class="token-step"><strong>1.</strong> Open GitHub and create a token for this device. The link pre-fills the owner, token name, no expiry, and <strong>Contents: Read and write</strong>.</p>
-        <a id="create-token-link" class="file-button github-link" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Create token on GitHub</a>
-        <p class="compact">On GitHub, the only manual permission step is <strong>Repository access → Only select repositories → Fitness-Tracker-Data</strong>. Generate the token and copy it.</p>
-        <p class="compact"><a href="https://github.com/settings/personal-access-tokens" target="_blank" rel="noopener">Open GitHub token settings</a></p>
+        <p class="token-step"><strong>1.</strong> Open the saved token in your private repository. GitHub may ask you to sign in first. Copy the entire contents of <code>TRACKER_TOKEN.txt</code>.</p>
+        <a id="saved-token-link" class="file-button github-link" href="#" target="_blank" rel="noopener">Open saved token on GitHub</a>
+        <p class="compact">Only during first-time setup or token replacement: <a id="create-token-link" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">create a new fine-grained token</a>, then save that token as the only contents of <code>TRACKER_TOKEN.txt</code> in the private repository.</p>
+        <p class="compact"><a href="https://github.com/settings/personal-access-tokens" target="_blank" rel="noopener">Manage GitHub tokens</a></p>
 
         <p class="token-step"><strong>2.</strong> Return here and paste the copied token.</p>
         <label class="token-field">
@@ -37,7 +37,7 @@
       </div>
 
       <p id="auth-status" class="status" role="status"></p>
-      <p class="compact">You do not need to move the token between devices: on another phone or computer, use the GitHub link above and create another token there. Saved fitness data stays in the private repository. Remembered tokens are kept in this browser and are never written to either repository.</p>
+      <p class="compact">On another phone or computer, use <strong>Open saved token on GitHub</strong>, sign in to GitHub normally, copy it, and connect. If remembered, the copied token is also cached in that browser for later visits.</p>
     </div>
   </section>
 
