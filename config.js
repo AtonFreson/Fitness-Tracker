@@ -2,7 +2,7 @@
 // This file is public. Do not put a GitHub access token in this file.
 export const CONFIG = {
   // GitHub account that owns the private data repository.
-  githubOwner: 'YOUR_GITHUB_USERNAME',
+  githubOwner: 'AtonFreson',
   githubRepo: 'Fitness-Tracker-Data',
   githubBranch: 'main',
 
