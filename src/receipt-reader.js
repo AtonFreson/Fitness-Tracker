@@ -9,14 +9,34 @@ function setStatus(onStatus, message) {
   if (typeof onStatus === 'function') onStatus(message);
 }
 
+async function getTextContentSafariSafe(page) {
+  const reader = page.streamTextContent().getReader();
+  const items = [];
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value?.items?.length) items.push(...value.items);
+    }
+  } finally {
+    try { reader.releaseLock(); } catch {}
+  }
+
+  return items;
+}
+
 async function readPdf(file) {
   const buffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
   if (pdf.numPages < 1) throw new Error('The PDF has no pages.');
   const page = await pdf.getPage(1);
 
-  const textContent = await page.getTextContent();
-  const embeddedText = textContent.items.map((item) => item.str).join('\n').trim();
+  // PDF.js 6 uses ReadableStream async iteration inside getTextContent().
+  // Safari 26 can expose ReadableStream without the async-iterator methods,
+  // so consume the same stream through getReader() instead.
+  const textItems = await getTextContentSafariSafe(page);
+  const embeddedText = textItems.map((item) => item.str).join('\n').trim();
 
   const baseViewport = page.getViewport({ scale: 1 });
   const scale = Math.min(3, 1500 / baseViewport.width, 6500 / baseViewport.height);
