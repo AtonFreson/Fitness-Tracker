@@ -1,5 +1,5 @@
 import { CONFIG, configProblems } from './config.js';
-import { importUploadedFile } from './src/import-router.js?v=health-delete-indicators-v4-20260814';
+import { importUploadedFile } from './src/import-router.js?v=5';
 import {
   saveLog,
   saveLogs,
@@ -7,10 +7,9 @@ import {
   deleteLog,
   clearLogs,
   exportJsonl,
-  parseJsonl,
   sortLogs,
   assertPrivateRepo,
-} from './src/storage.js?v=health-delete-indicators-v4-20260814';
+} from './src/storage.js?v=5';
 import {
   setAccessToken,
   clearAuth,
@@ -34,12 +33,7 @@ const commonBodyFields = [
   ['metrics.muscle_mass_kg', 'Muscle mass (kg)', 'number'],
 ];
 
-// TANITA review order mirrors the DC-360 receipt from top to bottom. Keeping
-// this separate from the shared/ACCUNIQ ordering means ACCUNIQ stays exactly
-// as it was while TANITA starts with its INPUT section and ends with the
-// BIOELECTRICAL DATA table.
 const tanitaReviewFields = [
-  // INPUT
   ['input.body_type', 'Body type', 'text'],
   ['input.gender', 'Gender', 'text'],
   ['input.age', 'Age', 'number'],
@@ -47,7 +41,6 @@ const tanitaReviewFields = [
   ['input.clothes_weight_kg', 'Clothes weight (kg)', 'number'],
   ['measured_at_local', 'Measured at', 'text'],
 
-  // RESULT
   ['metrics.weight_kg', 'Weight (kg)', 'number'],
   ['metrics.fat_percent', 'Body fat (%)', 'number'],
   ['metrics.fat_mass_kg', 'Fat mass (kg)', 'number'],
@@ -64,20 +57,17 @@ const tanitaReviewFields = [
   ['metrics.ideal_body_weight_kg', 'Ideal body weight (kg)', 'number'],
   ['metrics.degree_of_obesity_percent', 'Degree of obesity (%)', 'number'],
 
-  // DESIRABLE RANGE
   ['reference_ranges.fat_percent.min', 'Fat % range min', 'number'],
   ['reference_ranges.fat_percent.max', 'Fat % range max', 'number'],
   ['reference_ranges.fat_mass_kg.min', 'Fat mass range min (kg)', 'number'],
   ['reference_ranges.fat_mass_kg.max', 'Fat mass range max (kg)', 'number'],
 
-  // INDICATOR + PHYSIQUE RATING
   ['indicators.fat_percent.reading', 'Fat % indicator', 'text'],
   ['indicators.bmi.reading', 'BMI indicator', 'text'],
   ['indicators.muscle_mass.reading', 'Muscle mass indicator', 'text'],
   ['indicators.bmr.reading', 'BMR indicator', 'text'],
   ['qualitative.physique_rating', 'Physique rating', 'text'],
 
-  // BIOELECTRICAL DATA (receipt row order: R across both frequencies, then X)
   ['bioelectrical.6.25_khz.r_ohm', 'R 6.25 kHz (Ω)', 'number'],
   ['bioelectrical.50_khz.r_ohm', 'R 50 kHz (Ω)', 'number'],
   ['bioelectrical.6.25_khz.x_ohm', 'X 6.25 kHz (Ω)', 'number'],
@@ -223,8 +213,6 @@ function applyBodyForm() {
     const value = raw === '' ? null : input.dataset.valueType === 'number' ? Number(raw) : raw;
     setPath(log, input.dataset.path, value);
   }
-  // Keep the structured graph metadata consistent if an indicator reading is
-  // manually corrected in the review form (for example `0: 60%`).
   for (const key of ['fat_percent', 'bmi', 'muscle_mass', 'bmr']) {
     const indicator = log.indicators?.[key];
     if (!indicator?.reading) continue;
@@ -235,11 +223,13 @@ function applyBodyForm() {
     indicator.reading = `${indicator.level}: ${indicator.section_percent}%`;
   }
 
-  if (log.measured_at_local) {
-    const prefix = log.source?.type === 'accuniq_report' ? 'accuniq' : 'tanita';
-    log.id = `${prefix}:${log.measured_at_local}`;
-  }
-  log.extraction = { ...log.extraction, reviewed_by_user: true };
+  if (!log.measured_at_local) throw new Error('Measured at is required before saving.');
+  const prefix = log.source?.type === 'accuniq_report' ? 'accuniq' : 'tanita';
+  log.id = `${prefix}:${log.measured_at_local}`;
+
+  const derivedFields = log.extraction?.derived_fields || [];
+  if (derivedFields.length) log.extraction = { derived_fields: derivedFields };
+  else delete log.extraction;
   return log;
 }
 
@@ -260,7 +250,7 @@ function renderHealthReview(logs) {
     <p>${escapeHtml(first || '')} → ${escapeHtml(last || '')}</p>
     <p>Heart-rate summary available for ${withHr} workout${withHr === 1 ? '' : 's'}.</p>
     <p>Raw heart-rate readings: <strong>${sampleCount.toLocaleString()}</strong> across ${withSamples} workout${withSamples === 1 ? '' : 's'}.</p>
-    <p class="muted compact">Re-importing a full Apple Health export is safe: unchanged deterministic workout IDs are skipped instead of being written again.</p>`;
+    <p class="muted compact">Re-importing a full export only updates workouts whose stored data changed.</p>`;
   $('#health-review').hidden = false;
   $('#import-status').textContent = 'Apple Health import finished. Review the summary, then save to GitHub.';
 }
@@ -302,10 +292,10 @@ async function refreshLogs(message = '') {
       button.className = 'danger';
       button.textContent = 'Delete';
       button.addEventListener('click', async () => {
-        if (!confirm('Delete this log from the current private repository files? This rewrites/removes matching data instead of adding a tombstone. Git history may still contain older versions, and importing the original source again can recreate the log.')) return;
-        $('#log-status').textContent = 'Deleting matching log data from GitHub…';
+        if (!confirm('Delete this log from the private repository? Git history may still contain an earlier revision.')) return;
+        $('#log-status').textContent = 'Deleting log from GitHub…';
         await deleteLog(log.id);
-        await refreshLogs('Log deleted from the current repository files. Older copies may still exist in Git history.');
+        await refreshLogs('Log deleted.');
       });
       action.append(button);
       tr.append(action);
@@ -450,7 +440,7 @@ $('#save-body').addEventListener('click', async () => {
     const written = await saveLog(log);
     if (!written) {
       await refreshLogs('No repository write was needed; this log is unchanged.');
-      $('#import-status').textContent = `${sourceLabel(log)} is unchanged; no duplicate event was written.`;
+      $('#import-status').textContent = `${sourceLabel(log)} is unchanged.`;
       return;
     }
     await refreshLogs(`${sourceLabel(log)} body-composition log saved to GitHub.`);
@@ -486,24 +476,12 @@ $('#export-logs').addEventListener('click', async () => {
   } catch (error) { $('#log-status').textContent = error.message; }
 });
 
-$('#import-logs').addEventListener('change', async (event) => {
-  const file = event.target.files?.[0];
-  if (!file) return;
-  try {
-    const { logs, errors } = parseJsonl(await file.text());
-    const written = logs.length ? await saveLogs(logs) : 0;
-    const skipped = Math.max(0, logs.length - written);
-    await refreshLogs(`Imported ${written} new/changed log${written === 1 ? '' : 's'} to GitHub${skipped ? `; ${skipped} unchanged duplicate${skipped === 1 ? '' : 's'} skipped` : ''}${errors.length ? `; ${errors.length} line${errors.length === 1 ? '' : 's'} had errors` : ''}.`);
-  } catch (error) { $('#log-status').textContent = error.message; }
-  finally { event.target.value = ''; }
-});
-
 $('#clear-logs').addEventListener('click', async () => {
-  if (!confirm('Delete ALL current tracker logs from the current private repository files? This is destructive and does not create tombstones. Git history may still contain older versions, and later source imports can recreate records.')) return;
-  if (!confirm('Confirm deleting all current logs.')) return;
+  if (!confirm('Delete ALL tracker logs from the private repository?')) return;
+  if (!confirm('This will remove every current log. Continue?')) return;
   try {
     await clearLogs();
-    await refreshLogs('Current logs deleted from repository files. Older versions may still exist in Git history.');
+    await refreshLogs('All logs deleted.');
   } catch (error) { $('#log-status').textContent = error.message; }
 });
 

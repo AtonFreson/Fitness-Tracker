@@ -341,7 +341,7 @@ function parseAccuniqText(rawText, { sourceName = '' } = {}) {
 }
 
 function toAccuniqBodyCompositionLog(parsed, { sourceName = '', method = 'pdf-text' } = {}) {
-  const stamp = parsed.measured_at_local || parsed.date || `unknown-${Date.now()}`;
+  const stamp = parsed.measured_at_local || parsed.date || 'pending';
   return {
     schema_version: 1,
     id: `accuniq:${stamp}`,

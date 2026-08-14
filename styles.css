@@ -50,7 +50,7 @@ p { color: var(--muted); }
 .badge { padding: 5px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-size: .8rem; white-space: nowrap; }
 .file-button, button { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 10px 15px; border: 0; border-radius: 12px; background: var(--accent); color: var(--accent-contrast); font: inherit; font-weight: 750; cursor: pointer; }
 .file-button input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-button.secondary, .secondary-label { background: transparent; color: var(--text); border: 1px solid var(--line); }
+button.secondary { background: transparent; color: var(--text); border: 1px solid var(--line); }
 button.danger { background: transparent; color: var(--danger); border: 1px solid currentColor; }
 button:disabled { opacity: .55; cursor: wait; }
 .actions { display: flex; gap: 10px; margin-top: 16px; }
@@ -62,7 +62,7 @@ button:disabled { opacity: .55; cursor: wait; }
 .field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
 .field { display: grid; gap: 5px; }
 .field label { color: var(--muted); font-size: .82rem; font-weight: 700; }
-.field input, .stack-form input { width: 100%; min-height: 44px; border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; background: var(--bg); color: var(--text); font: inherit; }
+.field input { width: 100%; min-height: 44px; border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; background: var(--bg); color: var(--text); font: inherit; }
 .warning { border: 1px solid var(--warn-border); background: var(--warn); border-radius: 12px; padding: 10px 12px; margin: 8px 0; color: var(--text); }
 details { margin-top: 18px; }
 summary { cursor: pointer; font-weight: 750; color: var(--text); }
@@ -84,11 +84,6 @@ footer { padding: 8px 0 48px; }
 .vault-card { width: min(520px, 100%); background: var(--card); border: 1px solid var(--line); border-radius: 24px; padding: clamp(24px, 6vw, 40px); box-shadow: 0 24px 70px rgb(15 23 42 / .12); }
 .lock-mark { font-size: 2rem; margin-bottom: 12px; }
 .gate-title { font-size: clamp(2rem, 8vw, 3rem); }
-.stack-form { display: grid; gap: 14px; margin-top: 16px; }
-.stack-form label { display: grid; gap: 6px; color: var(--muted); font-size: .86rem; font-weight: 700; }
-.stack-form button { width: 100%; }
-.restore-details { border-top: 1px solid var(--line); padding-top: 16px; }
-.settings-form { max-width: 520px; }
 
 @media (max-width: 760px) {
   .info-grid { grid-template-columns: 1fr; }
@@ -104,9 +99,6 @@ footer { padding: 8px 0 48px; }
 .github-signin { width: 100%; margin-top: 14px; background: #24292f; color: #fff; }
 @media (prefers-color-scheme: dark) { .github-signin { background: #f0f6fc; color: #0d1117; } }
 
-.device-login { margin-top: 16px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--soft); }
-.device-code-row { display: flex; gap: 10px; align-items: center; margin: 10px 0; }
-.device-code { flex: 1; display: block; text-align: center; font-size: clamp(1.25rem, 6vw, 1.8rem); letter-spacing: .12em; font-weight: 800; color: var(--text); }
 .github-link { width: 100%; text-decoration: none; background: #24292f; color: #fff; }
 @media (prefers-color-scheme: dark) { .github-link { background: #f0f6fc; color: #0d1117; } }
 

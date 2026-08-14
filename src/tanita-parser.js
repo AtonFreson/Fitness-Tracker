@@ -547,10 +547,7 @@ function parseTanitaText(rawText, { sourceName = '' } = {}) {
   const bioelectrical = parseBioelectrical(text);
   if (physiqueRating != null) reviewFields.push('qualitative.physique_rating');
 
-  // BIOELECTRICAL DATA is part of the DC-360 receipt layout itself, so these
-  // fields are source-guaranteed rather than OCR-guaranteed. Always expose all
-  // four in the TANITA review form. If faint printing defeats OCR completely,
-  // the user can still type the values visible at the bottom of the receipt.
+  // DC-360 receipts always include these four impedance values.
   reviewFields.push(
     'bioelectrical.6.25_khz.r_ohm',
     'bioelectrical.6.25_khz.x_ohm',
@@ -580,7 +577,7 @@ function parseTanitaText(rawText, { sourceName = '' } = {}) {
 }
 
 function toBodyCompositionLog(parsed, { sourceName = '', method = 'ocr' } = {}) {
-  const stamp = parsed.measured_at_local || parsed.date || `unknown-${Date.now()}`;
+  const stamp = parsed.measured_at_local || parsed.date || 'pending';
   return {
     schema_version: 1,
     id: `tanita:${stamp}`,
@@ -684,10 +681,7 @@ function mergeTanitaParses(parses = []) {
     setValueAtPath(merged, path, groups[0].value);
   }
 
-  // Impedance rows have a useful physical ordering across frequencies. When
-  // two OCR passes each produce a different-but-plausible R pair, prefer the
-  // pair whose 6.25 kHz resistance is modestly above the 50 kHz resistance.
-  // This resolves common glyph ambiguity such as B29.4 -> 529.4.
+  // Prefer the physically plausible resistance ordering across frequencies.
   const rPairs = candidates
     .map((candidate) => [candidate.bioelectrical?.['6.25_khz']?.r_ohm, candidate.bioelectrical?.['50_khz']?.r_ohm])
     .filter(([lowFreq, highFreq]) => lowFreq != null && highFreq != null && lowFreq > highFreq);
@@ -727,10 +721,7 @@ function mergeTanitaParses(parses = []) {
   const correctedFields = new Set();
   const round1 = (value) => Math.round(value * 10) / 10;
 
-  // Re-run the strongest arithmetic identities after candidate voting. This
-  // is important when one pass confidently reads a bad digit (for example
-  // MUSCLE MASS 92 instead of 52.6) while other fields make the intended
-  // value unambiguous.
+  // Re-run cross-field checks after merging Vision candidates.
   if (merged.metrics?.ffm_kg != null && merged.metrics?.bone_mass_kg != null) {
     const expected = round1(merged.metrics.ffm_kg - merged.metrics.bone_mass_kg);
     if (merged.metrics.muscle_mass_kg == null || Math.abs(merged.metrics.muscle_mass_kg - expected) > 0.05) {

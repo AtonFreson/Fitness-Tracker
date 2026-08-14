@@ -4,23 +4,19 @@ import { parseTanitaText, toBodyCompositionLog, mergeTanitaParses } from './tani
 import { parseAccuniqText, toAccuniqBodyCompositionLog } from './accuniq-parser.js';
 import { detectBodyCompositionSource, labelForSource } from './source-detection.js';
 
-const EXTRACTOR_BUILD = 'vision-spatial-indicator-anchors-v4-20260814';
+const EXTRACTOR_BUILD = 'vision-spatial-v5';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.2.108/build/pdf.worker.min.mjs';
 
 function setStatus(onStatus, message) {
-  if (typeof onStatus === 'function') onStatus(message);
+  onStatus?.(message);
 }
 
 async function readPdf(file) {
-  const buffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
-  if (pdf.numPages < 1) throw new Error('The PDF has no pages.');
+  const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+  if (!pdf.numPages) throw new Error('The PDF has no pages.');
   const page = await pdf.getPage(1);
 
-  // PDF.js 6 implements getTextContent() using ReadableStream async iteration.
-  // iOS Safari 26.0-26.3 exposes ReadableStream but not its async iterator, so
-  // consume the exact same PDF.js text stream through getReader() instead.
   const reader = page.streamTextContent().getReader();
   const textItems = [];
   try {
@@ -32,322 +28,19 @@ async function readPdf(file) {
   } finally {
     try { reader.releaseLock(); } catch {}
   }
-  const embeddedText = textItems.map((item) => item.str).join('\n').trim();
 
-  const baseViewport = page.getViewport({ scale: 1 });
-  const scale = Math.min(3, 1500 / baseViewport.width, 6500 / baseViewport.height);
-  const viewport = page.getViewport({ scale: Math.max(1.5, scale) });
+  const base = page.getViewport({ scale: 1 });
+  const scale = Math.max(1.5, Math.min(3, 1500 / base.width, 6500 / base.height));
+  const viewport = page.getViewport({ scale });
   const canvas = document.createElement('canvas');
   canvas.width = Math.ceil(viewport.width);
   canvas.height = Math.ceil(viewport.height);
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  await page.render({ canvasContext: ctx, viewport }).promise;
-  return { embeddedText, canvas };
-}
+  await page.render({ canvasContext: canvas.getContext('2d', { willReadFrequently: true }), viewport }).promise;
 
-function resizeCanvas(source, targetWidth = 720) {
-  if (source.width <= targetWidth) return source;
-  const canvas = document.createElement('canvas');
-  canvas.width = targetWidth;
-  canvas.height = Math.max(1, Math.round(source.height * targetWidth / source.width));
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
-  return canvas;
-}
-
-function median(values) {
-  if (!values.length) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-}
-
-function dominantCluster(values, tolerance = 0.014) {
-  if (values.length < 3) return null;
-  let best = [];
-  for (const center of values) {
-    const cluster = values.filter((value) => Math.abs(value - center) <= tolerance);
-    if (cluster.length > best.length) best = cluster;
-  }
-  if (best.length < 3 || best.length / values.length < 0.25) return null;
   return {
-    position: median(best),
-    clusterSize: best.length,
-    sampleSize: values.length,
+    embeddedText: textItems.map((item) => item.str).join('\n').trim(),
+    canvas,
   };
-}
-
-function indicatorBand(name, position) {
-  const specs = (name === 'fat_percent' || name === 'bmi')
-    ? [
-        ['-', 0, 0.25],
-        ['0', 0.25, 0.50],
-        ['+', 0.50, 0.75],
-        ['++', 0.75, 1],
-      ]
-    : [
-        ['-', 0, 1 / 3],
-        ['0', 1 / 3, 2 / 3],
-        ['+', 2 / 3, 1],
-      ];
-
-  const clamped = Math.max(0, Math.min(0.999999, position));
-  const [level, start, end] = specs.find(([, a, b]) => clamped >= a && clamped < b) || specs.at(-1);
-  const rawPercent = ((clamped - start) / (end - start)) * 100;
-  // The thermal scans do not justify single-percentage-point precision. Five
-  // percent steps are fine-grained enough to show movement within the printed
-  // category while remaining honest about the image geometry.
-  const sectionPercent = Math.max(0, Math.min(100, Math.round(rawPercent / 5) * 5));
-  return {
-    level,
-    section_percent: sectionPercent,
-    reading: `${level}: ${sectionPercent}%`,
-  };
-}
-
-/**
- * Convert TANITA's printed indicator bars into category + within-category position data.
- *
- * This deliberately uses image geometry rather than OCR. The bar fill itself
- * is the information and OCR engines tend to return only the labels beneath
- * it. The DC-360 print layout is fixed: after locating the dark INDICATOR
- * heading, the five bar slots occur at consistent vertical spacing. Visceral fat
- * is intentionally skipped because its numeric rating already captures the same information.
- */
-function scanIndicatorBar({ gray, stretched, width, height, scanTop, scanBottom, barLeft, barRight }) {
-  const barWidth = barRight - barLeft;
-  const positions = [];
-  const top = Math.max(0, Math.floor(scanTop));
-  const bottom = Math.min(height, Math.ceil(scanBottom));
-
-  for (let y = top; y < bottom; y += 1) {
-    // Nine-pixel moving density smooths thermal-printer grain while keeping
-    // the filled/unfilled edge sharp enough to measure.
-    const darkRow = new Uint8Array(barWidth);
-    for (let localX = 0; localX < barWidth; localX += 1) {
-      const x = barLeft + localX;
-      darkRow[localX] = stretched(gray[y * width + x]) < 145 ? 1 : 0;
-    }
-    const active = new Uint8Array(barWidth);
-    const prefix = new Uint16Array(barWidth + 1);
-    for (let x = 0; x < barWidth; x += 1) prefix[x + 1] = prefix[x] + darkRow[x];
-    const radius = 4;
-    for (let x = 0; x < barWidth; x += 1) {
-      const windowStart = Math.max(0, x - radius);
-      const windowEnd = Math.min(barWidth - 1, x + radius);
-      const windowSum = prefix[windowEnd + 1] - prefix[windowStart];
-      active[x] = windowSum / (windowEnd - windowStart + 1) > 0.52 ? 1 : 0;
-    }
-
-    const runs = [];
-    let runStart = null;
-    for (let x = 0; x < barWidth; x += 1) {
-      if (active[x] && runStart == null) runStart = x;
-      if (runStart != null && (!active[x] || x === barWidth - 1)) {
-        const runEnd = active[x] && x === barWidth - 1 ? x : x - 1;
-        if (runEnd - runStart + 1 >= 5) runs.push([runStart, runEnd]);
-        runStart = null;
-      }
-    }
-
-    const leftRuns = runs.filter(([runX]) => runX < width * 0.12);
-    if (!leftRuns.length) continue;
-    let [fillStart, fillEnd] = leftRuns.sort((a, b) => a[0] - b[0])[0];
-    for (const [nextStart, nextEnd] of runs) {
-      if (nextStart > fillEnd && nextStart - fillEnd <= 12) fillEnd = nextEnd;
-    }
-    const position = fillEnd / barWidth;
-    if (fillStart < width * 0.12 && position > 0.05 && position < 0.98) positions.push(position);
-  }
-
-  return dominantCluster(positions);
-}
-
-/**
- * Convert TANITA's printed indicator bars into category + within-category position data.
- *
- * Google Vision is used only to locate the *labels* when its word geometry is
- * available. The value itself still comes from the pixels in the printed bar.
- * This matters for BMR/muscle bars: small changes in scan crop or vertical
- * stretch can move the bar enough that a fixed DC-360 offset misses it even
- * though the bar is visually clear. A wider layout-only fallback remains for
- * offline/local OCR imports.
- */
-function analyzeTanitaIndicators(sourceCanvas, labelAnchors = null) {
-  if (!sourceCanvas?.width || !sourceCanvas?.height) return null;
-  const canvas = resizeCanvas(sourceCanvas, 720);
-  const { width, height } = canvas;
-  if (width < 250 || height < 700) return null;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  const data = ctx.getImageData(0, 0, width, height).data;
-  const gray = new Uint8Array(width * height);
-  const histogram = new Uint32Array(256);
-
-  for (let p = 0, i = 0; i < data.length; i += 4, p += 1) {
-    const value = Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
-    gray[p] = value;
-    histogram[value] += 1;
-  }
-  const low = percentileFromHistogram(histogram, gray.length, 0.01);
-  const high = Math.max(low + 10, percentileFromHistogram(histogram, gray.length, 0.985));
-  const stretched = (value) => Math.max(0, Math.min(255, ((value - low) * 255) / (high - low)));
-
-  // Locate the dark INDICATOR title band for the local/layout-only fallback.
-  const x0 = Math.floor(width * 0.03);
-  const x1 = Math.ceil(width * 0.97);
-  const y0 = Math.floor(height * 0.48);
-  const y1 = Math.ceil(height * 0.72);
-  const qualifying = [];
-  for (let y = y0; y < y1; y += 1) {
-    let dark = 0;
-    for (let x = x0; x < x1; x += 1) {
-      if (stretched(gray[y * width + x]) < 115) dark += 1;
-    }
-    qualifying.push(dark / (x1 - x0) > 0.64);
-  }
-
-  const bands = [];
-  let start = null;
-  for (let i = 0; i < qualifying.length; i += 1) {
-    if (qualifying[i] && start == null) start = y0 + i;
-    if (start != null && (!qualifying[i] || i === qualifying.length - 1)) {
-      const end = qualifying[i] && i === qualifying.length - 1 ? y0 + i : y0 + i - 1;
-      if (end - start + 1 >= Math.max(6, Math.round(width * 0.008))) bands.push([start, end]);
-      start = null;
-    }
-  }
-  const indicatorHeaderBottom = bands.length ? bands.at(-1)[1] : null;
-
-  // Keep the visceral-fat slot in the layout index so the later bars line up,
-  // but do not store it: the numeric visceral-fat rating is more precise.
-  const names = ['fat_percent', 'bmi', null, 'muscle_mass', 'bmr'];
-  const output = {};
-  const barLeft = Math.floor(width * 0.025);
-  const barRight = Math.ceil(width * 0.965);
-
-  for (let index = 0; index < names.length; index += 1) {
-    const name = names[index];
-    if (!name) continue;
-    const candidates = [];
-    const anchor = labelAnchors?.[name];
-
-    if (anchor?.bottom_ratio != null) {
-      const labelBottom = anchor.bottom_ratio * height;
-      const nextTop = anchor.next_top_ratio != null ? anchor.next_top_ratio * height : null;
-      // The bar is immediately below the label. Limit the search to the upper
-      // part of the label-to-next-label gap so scale text beneath the bar does
-      // not become a competing dark run.
-      let scanBottom = labelBottom + 0.070 * width;
-      if (nextTop != null && nextTop > labelBottom) {
-        scanBottom = Math.min(scanBottom, labelBottom + (nextTop - labelBottom) * 0.38);
-      }
-      const cluster = scanIndicatorBar({
-        gray,
-        stretched,
-        width,
-        height,
-        scanTop: labelBottom + 0.002 * width,
-        scanBottom,
-        barLeft,
-        barRight,
-      });
-      if (cluster) candidates.push({ cluster, locator: 'google_vision_label' });
-    }
-
-    if (indicatorHeaderBottom != null) {
-      const nominalTop = indicatorHeaderBottom + (0.062 + 0.225 * index) * width;
-      // The previous window started below nominalTop and could miss an otherwise
-      // obvious BMR fill by a few pixels. Search on both sides of the expected
-      // position and let repeated scan rows vote for the fill edge.
-      const cluster = scanIndicatorBar({
-        gray,
-        stretched,
-        width,
-        height,
-        scanTop: nominalTop - 0.018 * width,
-        scanBottom: nominalTop + 0.055 * width,
-        barLeft,
-        barRight,
-      });
-      if (cluster) candidates.push({ cluster, locator: 'layout_fallback' });
-    }
-
-    if (!candidates.length) continue;
-    // Prefer the OCR-label anchored window when it yields a stable cluster;
-    // otherwise choose the candidate with the most repeated supporting rows.
-    candidates.sort((a, b) => {
-      if (a.locator !== b.locator) {
-        if (a.locator === 'google_vision_label' && a.cluster.clusterSize >= 3) return -1;
-        if (b.locator === 'google_vision_label' && b.cluster.clusterSize >= 3) return 1;
-      }
-      const aq = a.cluster.clusterSize / a.cluster.sampleSize;
-      const bq = b.cluster.clusterSize / b.cluster.sampleSize;
-      return (b.cluster.clusterSize + bq * 4) - (a.cluster.clusterSize + aq * 4);
-    });
-    const { cluster, locator } = candidates[0];
-    const clusterFraction = cluster.clusterSize / cluster.sampleSize;
-    const confidence = Math.min(0.99, 0.45 + 0.42 * clusterFraction + 0.02 * Math.min(cluster.clusterSize, 6));
-    const band = indicatorBand(name, cluster.position);
-    output[name] = {
-      ...band,
-      position: Math.round(cluster.position * 1000) / 1000,
-      confidence: Math.round(confidence * 100) / 100,
-      source: 'indicator_graph',
-      locator,
-    };
-  }
-  return Object.keys(output).length ? output : null;
-}
-
-function attachTanitaIndicators(parsed, canvas, labelAnchors = null) {
-  if (!parsed) return parsed;
-  const indicators = analyzeTanitaIndicators(canvas, labelAnchors) || {};
-
-  // Every DC-360 receipt has these four independent indicator bars. Keep all
-  // four review fields available even when image geometry cannot confidently
-  // recover one of them, so a missed graph can be corrected manually. The
-  // visceral-fat graph is deliberately excluded because its numeric rating is
-  // already printed directly and the graph adds no separate information.
-  const reviewIndicatorKeys = ['fat_percent', 'bmi', 'muscle_mass', 'bmr'];
-  parsed.indicators = {
-    ...(parsed.indicators || {}),
-    ...indicators,
-  };
-  const fields = new Set(parsed.extraction?.review_fields || ['measured_at_local']);
-  for (const key of reviewIndicatorKeys) fields.add(`indicators.${key}.reading`);
-  const warnings = [...(parsed.extraction?.warnings || [])];
-
-  const fat = parsed.metrics?.fat_percent;
-  const fatRange = parsed.reference_ranges?.fat_percent;
-  const fatLevel = indicators.fat_percent?.level;
-  if (fat != null && fatRange?.min != null && fatRange?.max != null && fatLevel) {
-    const numericallyInRange = fat >= fatRange.min && fat <= fatRange.max;
-    const graphInRange = fatLevel === '0';
-    if (numericallyInRange !== graphInRange) {
-      warnings.push('Fat % OCR and the printed FAT % indicator band disagree; review the numeric fat percentage.');
-    }
-  }
-
-  parsed.extraction = {
-    ...parsed.extraction,
-    warnings: [...new Set(warnings)],
-    review_fields: [...fields],
-  };
-  return parsed;
-}
-
-function tanitaIndicatorDiagnosticLines(parsed) {
-  const labels = [
-    ['fat_percent', 'Fat %'],
-    ['bmi', 'BMI'],
-    ['muscle_mass', 'Muscle mass'],
-    ['bmr', 'BMR'],
-  ];
-  return labels.map(([key, label]) => {
-    const indicator = parsed?.indicators?.[key];
-    if (!indicator?.reading) return `Indicator ${label}: not detected`;
-    return `Indicator ${label}: ${indicator.reading}; position=${indicator.position ?? 'n/a'}; confidence=${indicator.confidence ?? 'n/a'}; locator=${indicator.locator || 'unknown'}`;
-  });
 }
 
 async function readImage(file) {
@@ -356,110 +49,18 @@ async function readImage(file) {
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(bitmap.width * scale));
   canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  canvas.getContext('2d', { willReadFrequently: true }).drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close();
   return { embeddedText: '', canvas };
 }
 
-function percentileFromHistogram(hist, total, fraction) {
-  const target = total * fraction;
-  let seen = 0;
-  for (let i = 0; i < hist.length; i += 1) {
-    seen += hist[i];
-    if (seen >= target) return i;
-  }
-  return 255;
-}
-
-function enhanceContrast(sourceCanvas) {
+function resizeCanvas(source, targetWidth = 720) {
+  if (source.width <= targetWidth) return source;
   const canvas = document.createElement('canvas');
-  canvas.width = sourceCanvas.width;
-  canvas.height = sourceCanvas.height;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(sourceCanvas, 0, 0);
-  const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const data = image.data;
-  const hist = new Uint32Array(256);
-
-  for (let i = 0; i < data.length; i += 16) {
-    const y = Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
-    hist[y] += 1;
-  }
-  const total = hist.reduce((a, b) => a + b, 0);
-  const low = percentileFromHistogram(hist, total, 0.01);
-  const high = Math.max(low + 10, percentileFromHistogram(hist, total, 0.985));
-
-  for (let i = 0; i < data.length; i += 4) {
-    const y = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-    const stretched = Math.max(0, Math.min(255, ((y - low) * 255) / (high - low)));
-    const v = Math.round(stretched);
-    data[i] = v;
-    data[i + 1] = v;
-    data[i + 2] = v;
-  }
-  ctx.putImageData(image, 0, 0);
+  canvas.width = targetWidth;
+  canvas.height = Math.round(source.height * targetWidth / source.width);
+  canvas.getContext('2d', { willReadFrequently: true }).drawImage(source, 0, 0, canvas.width, canvas.height);
   return canvas;
-}
-
-
-function localContrastCanvas(sourceCanvas, radius = 20, gain = 2.5) {
-  const width = sourceCanvas.width;
-  const height = sourceCanvas.height;
-  const sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently: true });
-  const image = sourceCtx.getImageData(0, 0, width, height);
-  const pixels = image.data;
-  const gray = new Uint8Array(width * height);
-
-  for (let i = 0, p = 0; i < pixels.length; i += 4, p += 1) {
-    gray[p] = Math.round(0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2]);
-  }
-
-  // Integral image gives a fast local mean without pulling in another image-processing library.
-  const stride = width + 1;
-  // Crop sizes are small enough that a 32-bit summed-area table cannot
-  // overflow, and it halves memory versus Float64Array on iOS Safari.
-  const integral = new Uint32Array((width + 1) * (height + 1));
-  for (let y = 0; y < height; y += 1) {
-    let rowSum = 0;
-    const row = y * width;
-    const outRow = (y + 1) * stride;
-    const prevRow = y * stride;
-    for (let x = 0; x < width; x += 1) {
-      rowSum += gray[row + x];
-      integral[outRow + x + 1] = integral[prevRow + x + 1] + rowSum;
-    }
-  }
-
-  const output = document.createElement('canvas');
-  output.width = width;
-  output.height = height;
-  const outCtx = output.getContext('2d', { willReadFrequently: true });
-  const outImage = outCtx.createImageData(width, height);
-  const out = outImage.data;
-
-  for (let y = 0; y < height; y += 1) {
-    const top = Math.max(0, y - radius);
-    const bottom = Math.min(height - 1, y + radius);
-    for (let x = 0; x < width; x += 1) {
-      const left = Math.max(0, x - radius);
-      const right = Math.min(width - 1, x + radius);
-      const a = integral[top * stride + left];
-      const b = integral[top * stride + right + 1];
-      const c = integral[(bottom + 1) * stride + left];
-      const d = integral[(bottom + 1) * stride + right + 1];
-      const count = (right - left + 1) * (bottom - top + 1);
-      const mean = (d - b - c + a) / count;
-      const v = Math.max(0, Math.min(255, Math.round(245 + (gray[y * width + x] - mean) * gain)));
-      const q = (y * width + x) * 4;
-      out[q] = v;
-      out[q + 1] = v;
-      out[q + 2] = v;
-      out[q + 3] = 255;
-    }
-  }
-  outCtx.putImageData(outImage, 0, 0);
-  return output;
 }
 
 function cropCanvas(source, y0, y1) {
@@ -472,54 +73,210 @@ function cropCanvas(source, y0, y1) {
   return canvas;
 }
 
-function thresholdCanvas(sourceCanvas, threshold = 178) {
-  const enhanced = enhanceContrast(sourceCanvas);
-  const ctx = enhanced.getContext('2d', { willReadFrequently: true });
-  const image = ctx.getImageData(0, 0, enhanced.width, enhanced.height);
-  const data = image.data;
-  // A moderate fixed threshold is intentionally used only as a fallback pass.
-  // It helps faint dot-matrix digits but is worse than grayscale for clean text.
-  for (let i = 0; i < data.length; i += 4) {
-    const v = data[i] < threshold ? 0 : 255;
-    data[i] = v;
-    data[i + 1] = v;
-    data[i + 2] = v;
+function percentileFromHistogram(histogram, total, fraction) {
+  const target = total * fraction;
+  let seen = 0;
+  for (let i = 0; i < histogram.length; i += 1) {
+    seen += histogram[i];
+    if (seen >= target) return i;
   }
-  ctx.putImageData(image, 0, 0);
-  return enhanced;
+  return 255;
 }
 
-async function recognize(worker, canvas) {
-  const result = await worker.recognize(canvas);
-  return result?.data?.text || '';
+function median(values) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
-function parseForSource(text, fileName = '') {
-  const source = detectBodyCompositionSource(text, fileName);
-  if (source === 'tanita') return { source, parsed: parseTanitaText(text, { sourceName: fileName }) };
-  if (source === 'accuniq') return { source, parsed: parseAccuniqText(text, { sourceName: fileName }) };
-  return { source: 'unknown', parsed: null };
+function dominantCluster(values, tolerance = 0.014) {
+  if (values.length < 3) return null;
+  let best = [];
+  for (const center of values) {
+    const cluster = values.filter((value) => Math.abs(value - center) <= tolerance);
+    if (cluster.length > best.length) best = cluster;
+  }
+  if (best.length < 3 || best.length / values.length < 0.25) return null;
+  return { position: median(best), clusterSize: best.length, sampleSize: values.length };
 }
 
-function logForSource(source, parsed, fileName, method) {
-  if (source === 'tanita') return toBodyCompositionLog(parsed, { sourceName: fileName, method });
-  if (source === 'accuniq') return toAccuniqBodyCompositionLog(parsed, { sourceName: fileName, method });
-  throw new Error('Unsupported body-composition source.');
+function indicatorBand(name, position) {
+  const bands = (name === 'fat_percent' || name === 'bmi')
+    ? [['-', 0, 0.25], ['0', 0.25, 0.5], ['+', 0.5, 0.75], ['++', 0.75, 1]]
+    : [['-', 0, 1 / 3], ['0', 1 / 3, 2 / 3], ['+', 2 / 3, 1]];
+  const clamped = Math.max(0, Math.min(0.999999, position));
+  const [level, start, end] = bands.find(([, a, b]) => clamped >= a && clamped < b) || bands.at(-1);
+  const sectionPercent = Math.max(0, Math.min(100, Math.round((((clamped - start) / (end - start)) * 100) / 5) * 5));
+  return { level, section_percent: sectionPercent, reading: `${level}: ${sectionPercent}%` };
 }
 
-function canvasBase64Jpeg(canvas, quality = 0.9) {
-  // Cloud Vision accepts inline base64 image content. JPEG keeps a five-zone
-  // TANITA batch small enough for iOS Safari without materially affecting the
-  // high-contrast receipt text.
-  const dataUrl = canvas.toDataURL('image/jpeg', quality);
-  const comma = dataUrl.indexOf(',');
-  return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+function scanIndicatorBar({ gray, stretch, width, height, scanTop, scanBottom, barLeft, barRight }) {
+  const barWidth = barRight - barLeft;
+  const positions = [];
+  for (let y = Math.max(0, Math.floor(scanTop)); y < Math.min(height, Math.ceil(scanBottom)); y += 1) {
+    const dark = new Uint8Array(barWidth);
+    for (let x = 0; x < barWidth; x += 1) dark[x] = stretch(gray[y * width + barLeft + x]) < 145 ? 1 : 0;
+
+    const prefix = new Uint16Array(barWidth + 1);
+    for (let x = 0; x < barWidth; x += 1) prefix[x + 1] = prefix[x] + dark[x];
+    const active = new Uint8Array(barWidth);
+    for (let x = 0; x < barWidth; x += 1) {
+      const left = Math.max(0, x - 4);
+      const right = Math.min(barWidth - 1, x + 4);
+      active[x] = (prefix[right + 1] - prefix[left]) / (right - left + 1) > 0.52 ? 1 : 0;
+    }
+
+    const runs = [];
+    let start = null;
+    for (let x = 0; x < barWidth; x += 1) {
+      if (active[x] && start == null) start = x;
+      if (start != null && (!active[x] || x === barWidth - 1)) {
+        const end = active[x] && x === barWidth - 1 ? x : x - 1;
+        if (end - start >= 4) runs.push([start, end]);
+        start = null;
+      }
+    }
+
+    const leftRuns = runs.filter(([x]) => x < width * 0.12);
+    if (!leftRuns.length) continue;
+    let [fillStart, fillEnd] = leftRuns[0];
+    for (const [nextStart, nextEnd] of runs) {
+      if (nextStart > fillEnd && nextStart - fillEnd <= 12) fillEnd = nextEnd;
+    }
+    const position = fillEnd / barWidth;
+    if (fillStart < width * 0.12 && position > 0.05 && position < 0.98) positions.push(position);
+  }
+  return dominantCluster(positions);
 }
 
-function googleVisionText(response) {
-  return response?.fullTextAnnotation?.text
-    || response?.textAnnotations?.[0]?.description
-    || '';
+function analyzeTanitaIndicators(sourceCanvas, labelAnchors = null) {
+  if (!sourceCanvas?.width || !sourceCanvas?.height) return null;
+  const canvas = resizeCanvas(sourceCanvas);
+  const { width, height } = canvas;
+  if (width < 250 || height < 700) return null;
+
+  const pixels = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, width, height).data;
+  const gray = new Uint8Array(width * height);
+  const histogram = new Uint32Array(256);
+  for (let i = 0, p = 0; i < pixels.length; i += 4, p += 1) {
+    const value = Math.round(0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2]);
+    gray[p] = value;
+    histogram[value] += 1;
+  }
+  const low = percentileFromHistogram(histogram, gray.length, 0.01);
+  const high = Math.max(low + 10, percentileFromHistogram(histogram, gray.length, 0.985));
+  const stretch = (value) => Math.max(0, Math.min(255, ((value - low) * 255) / (high - low)));
+
+  const x0 = Math.floor(width * 0.03);
+  const x1 = Math.ceil(width * 0.97);
+  const y0 = Math.floor(height * 0.48);
+  const y1 = Math.ceil(height * 0.72);
+  const qualifying = [];
+  for (let y = y0; y < y1; y += 1) {
+    let dark = 0;
+    for (let x = x0; x < x1; x += 1) if (stretch(gray[y * width + x]) < 115) dark += 1;
+    qualifying.push(dark / (x1 - x0) > 0.64);
+  }
+
+  const headerBands = [];
+  let bandStart = null;
+  for (let i = 0; i < qualifying.length; i += 1) {
+    if (qualifying[i] && bandStart == null) bandStart = y0 + i;
+    if (bandStart != null && (!qualifying[i] || i === qualifying.length - 1)) {
+      const end = qualifying[i] && i === qualifying.length - 1 ? y0 + i : y0 + i - 1;
+      if (end - bandStart + 1 >= Math.max(6, Math.round(width * 0.008))) headerBands.push([bandStart, end]);
+      bandStart = null;
+    }
+  }
+
+  const headerBottom = headerBands.at(-1)?.[1] ?? null;
+  const layoutNames = ['fat_percent', 'bmi', null, 'muscle_mass', 'bmr'];
+  const barLeft = Math.floor(width * 0.025);
+  const barRight = Math.ceil(width * 0.965);
+  const output = {};
+
+  for (let index = 0; index < layoutNames.length; index += 1) {
+    const name = layoutNames[index];
+    if (!name) continue;
+    const candidates = [];
+    const anchor = labelAnchors?.[name];
+
+    if (anchor?.bottom_ratio != null) {
+      const labelBottom = anchor.bottom_ratio * height;
+      const nextTop = anchor.next_top_ratio != null ? anchor.next_top_ratio * height : null;
+      let scanBottom = labelBottom + 0.07 * width;
+      if (nextTop != null && nextTop > labelBottom) scanBottom = Math.min(scanBottom, labelBottom + (nextTop - labelBottom) * 0.38);
+      const cluster = scanIndicatorBar({
+        gray, stretch, width, height,
+        scanTop: labelBottom + 0.002 * width,
+        scanBottom,
+        barLeft,
+        barRight,
+      });
+      if (cluster) candidates.push({ cluster, locator: 'vision_label' });
+    }
+
+    if (headerBottom != null) {
+      const nominal = headerBottom + (0.062 + 0.225 * index) * width;
+      const cluster = scanIndicatorBar({
+        gray, stretch, width, height,
+        scanTop: nominal - 0.018 * width,
+        scanBottom: nominal + 0.055 * width,
+        barLeft,
+        barRight,
+      });
+      if (cluster) candidates.push({ cluster, locator: 'layout' });
+    }
+
+    if (!candidates.length) continue;
+    candidates.sort((a, b) => {
+      if (a.locator !== b.locator) {
+        if (a.locator === 'vision_label' && a.cluster.clusterSize >= 3) return -1;
+        if (b.locator === 'vision_label' && b.cluster.clusterSize >= 3) return 1;
+      }
+      return b.cluster.clusterSize / b.cluster.sampleSize - a.cluster.clusterSize / a.cluster.sampleSize;
+    });
+
+    const { cluster, locator } = candidates[0];
+    const band = indicatorBand(name, cluster.position);
+    output[name] = {
+      ...band,
+      position: Math.round(cluster.position * 1000) / 1000,
+      confidence: Math.round(Math.min(0.99, 0.45 + 0.42 * (cluster.clusterSize / cluster.sampleSize) + 0.02 * Math.min(cluster.clusterSize, 6)) * 100) / 100,
+      source: 'indicator_graph',
+      locator,
+    };
+  }
+  return Object.keys(output).length ? output : null;
+}
+
+function attachTanitaIndicators(parsed, canvas, labelAnchors = null) {
+  const detected = analyzeTanitaIndicators(canvas, labelAnchors) || {};
+  parsed.indicators = { ...(parsed.indicators || {}), ...detected };
+  const fields = new Set(parsed.extraction?.review_fields || ['measured_at_local']);
+  for (const key of ['fat_percent', 'bmi', 'muscle_mass', 'bmr']) fields.add(`indicators.${key}.reading`);
+
+  const warnings = [...(parsed.extraction?.warnings || [])];
+  const fat = parsed.metrics?.fat_percent;
+  const range = parsed.reference_ranges?.fat_percent;
+  const level = detected.fat_percent?.level;
+  if (fat != null && range?.min != null && range?.max != null && level) {
+    if ((fat >= range.min && fat <= range.max) !== (level === '0')) {
+      warnings.push('Fat % and the printed FAT % indicator disagree; review the value.');
+    }
+  }
+
+  parsed.extraction = {
+    ...parsed.extraction,
+    warnings: [...new Set(warnings)],
+    review_fields: [...fields],
+  };
+  return parsed;
+}
+
+function canvasBase64Jpeg(canvas) {
+  return canvas.toDataURL('image/jpeg', 0.9).split(',', 2)[1];
 }
 
 function visionVertexNumber(value) {
@@ -527,141 +284,99 @@ function visionVertexNumber(value) {
   return Number.isFinite(number) ? number : 0;
 }
 
-function visionWordFromVertices(text, vertices) {
-  const cleanText = String(text || '').trim();
-  if (!cleanText || !vertices?.length) return null;
-  const xs = vertices.map((vertex) => visionVertexNumber(vertex?.x));
-  const ys = vertices.map((vertex) => visionVertexNumber(vertex?.y));
-  const left = Math.min(...xs);
-  const right = Math.max(...xs);
-  const top = Math.min(...ys);
-  const bottom = Math.max(...ys);
-  const height = Math.max(1, bottom - top);
-  const width = Math.max(1, right - left);
-  return {
-    text: cleanText,
-    left,
-    right,
-    top,
-    bottom,
-    width,
-    height,
-    centerY: (top + bottom) / 2,
-  };
-}
-
-function googleVisionWords(response) {
+function visionWords(response) {
   const words = [];
   for (const page of response?.fullTextAnnotation?.pages || []) {
-    const pageWidth = Math.max(1, Number(page?.width) || 1);
-    const pageHeight = Math.max(1, Number(page?.height) || 1);
-    for (const block of page?.blocks || []) {
-      for (const paragraph of block?.paragraphs || []) {
-        for (const word of paragraph?.words || []) {
-          const text = (word?.symbols || []).map((symbol) => symbol?.text || '').join('').trim();
+    const pageWidth = Math.max(1, Number(page.width) || 1);
+    const pageHeight = Math.max(1, Number(page.height) || 1);
+    for (const block of page.blocks || []) {
+      for (const paragraph of block.paragraphs || []) {
+        for (const word of paragraph.words || []) {
+          const text = (word.symbols || []).map((symbol) => symbol.text || '').join('').trim();
           if (!text) continue;
-          const pixelVertices = word?.boundingBox?.vertices || [];
-          const normalizedVertices = word?.boundingBox?.normalizedVertices || [];
-          const vertices = pixelVertices.length
-            ? pixelVertices
-            : normalizedVertices.map((vertex) => ({
-                x: visionVertexNumber(vertex?.x) * pageWidth,
-                y: visionVertexNumber(vertex?.y) * pageHeight,
-              }));
-          const parsed = visionWordFromVertices(text, vertices);
-          if (parsed) words.push(parsed);
+          const rawVertices = word.boundingBox?.vertices?.length
+            ? word.boundingBox.vertices
+            : (word.boundingBox?.normalizedVertices || []).map((vertex) => ({ x: vertex.x * pageWidth, y: vertex.y * pageHeight }));
+          const xs = rawVertices.map((vertex) => visionVertexNumber(vertex.x));
+          const ys = rawVertices.map((vertex) => visionVertexNumber(vertex.y));
+          if (!xs.length || !ys.length) continue;
+          const left = Math.min(...xs);
+          const right = Math.max(...xs);
+          const top = Math.min(...ys);
+          const bottom = Math.max(...ys);
+          words.push({ text, left, right, top, bottom, height: Math.max(1, bottom - top), centerY: (top + bottom) / 2 });
         }
       }
     }
   }
-  if (words.length) return words;
 
-  // Some Vision responses expose word geometry only through textAnnotations.
-  // Entry 0 is the full-page transcription; later entries are individual
-  // tokens with bounding polygons. Use these as a geometry fallback rather
-  // than falling back to the column-ordered transcription.
+  if (words.length) return words;
   for (const annotation of (response?.textAnnotations || []).slice(1)) {
-    const parsed = visionWordFromVertices(annotation?.description, annotation?.boundingPoly?.vertices || []);
-    if (parsed) words.push(parsed);
+    const vertices = annotation?.boundingPoly?.vertices || [];
+    const text = String(annotation?.description || '').trim();
+    if (!text || !vertices.length) continue;
+    const xs = vertices.map((vertex) => visionVertexNumber(vertex.x));
+    const ys = vertices.map((vertex) => visionVertexNumber(vertex.y));
+    const left = Math.min(...xs);
+    const right = Math.max(...xs);
+    const top = Math.min(...ys);
+    const bottom = Math.max(...ys);
+    words.push({ text, left, right, top, bottom, height: Math.max(1, bottom - top), centerY: (top + bottom) / 2 });
   }
   return words;
 }
 
-/**
- * Cloud Vision's fullTextAnnotation.text follows document reading order. On a
- * TANITA receipt that can mean "all labels, then all values" because the RESULT
- * box is a two-column table. The word bounding boxes are substantially more
- * useful: rebuild visual rows first, then feed those rows to the normal parser.
- * This turns Vision into a structured receipt reader rather than another noisy
- * plain-text OCR source.
- */
-function googleVisionSpatialResult(response) {
-  const words = googleVisionWords(response);
-  if (!words.length) return { text: '', wordCount: 0, rowCount: 0 };
+function spatialText(response) {
+  const words = visionWords(response);
+  if (!words.length) return { text: '', lines: [], wordCount: 0 };
+  const typicalHeight = median(words.map((word) => word.height)) || 12;
+  const rows = [];
 
-  const typicalHeight = median(words.map((word) => word.height).filter((height) => height > 0)) || 12;
-  const sorted = [...words].sort((a, b) => a.centerY - b.centerY || a.left - b.left);
-  const lines = [];
-
-  for (const word of sorted) {
-    let bestLine = null;
+  for (const word of [...words].sort((a, b) => a.centerY - b.centerY || a.left - b.left)) {
+    let best = null;
     let bestScore = Infinity;
-    for (const line of lines) {
-      const centerGap = Math.abs(word.centerY - line.centerY);
-      const overlap = Math.max(0, Math.min(word.bottom, line.bottom) - Math.max(word.top, line.top));
-      const overlapRatio = overlap / Math.max(1, Math.min(word.height, line.height));
-      const tolerance = Math.max(4, typicalHeight * 0.85, Math.min(word.height, line.height) * 0.70);
-      if (centerGap <= tolerance || overlapRatio >= 0.35) {
-        const score = centerGap - overlapRatio * typicalHeight * 0.4;
-        if (score < bestScore) {
-          bestScore = score;
-          bestLine = line;
-        }
+    for (const row of rows) {
+      const gap = Math.abs(word.centerY - row.centerY);
+      const overlap = Math.max(0, Math.min(word.bottom, row.bottom) - Math.max(word.top, row.top));
+      const overlapRatio = overlap / Math.max(1, Math.min(word.height, row.height));
+      const tolerance = Math.max(4, typicalHeight * 0.85, Math.min(word.height, row.height) * 0.7);
+      if (gap <= tolerance || overlapRatio >= 0.35) {
+        const score = gap - overlapRatio * typicalHeight * 0.4;
+        if (score < bestScore) { best = row; bestScore = score; }
       }
     }
-
-    if (!bestLine) {
-      lines.push({
-        words: [word],
-        top: word.top,
-        bottom: word.bottom,
-        height: word.height,
-        centerY: word.centerY,
-      });
-      continue;
+    if (!best) {
+      rows.push({ words: [word], top: word.top, bottom: word.bottom, height: word.height, centerY: word.centerY });
+    } else {
+      best.words.push(word);
+      best.top = Math.min(best.top, word.top);
+      best.bottom = Math.max(best.bottom, word.bottom);
+      best.height = Math.max(1, best.bottom - best.top);
+      best.centerY = best.words.reduce((sum, item) => sum + item.centerY, 0) / best.words.length;
     }
-
-    bestLine.words.push(word);
-    bestLine.top = Math.min(bestLine.top, word.top);
-    bestLine.bottom = Math.max(bestLine.bottom, word.bottom);
-    bestLine.height = Math.max(1, bestLine.bottom - bestLine.top);
-    bestLine.centerY = bestLine.words.reduce((sum, item) => sum + item.centerY, 0) / bestLine.words.length;
   }
 
-  lines.sort((a, b) => a.centerY - b.centerY || Math.min(...a.words.map((word) => word.left)) - Math.min(...b.words.map((word) => word.left)));
-  const visualLines = lines.map((line) => {
-    line.words.sort((a, b) => a.left - b.left);
-    return {
-      text: line.words.map((word) => word.text).join(' '),
-      top: line.top,
-      bottom: line.bottom,
-      centerY: line.centerY,
-      left: Math.min(...line.words.map((word) => word.left)),
-      right: Math.max(...line.words.map((word) => word.right)),
-    };
-  }).filter((line) => line.text);
-  const text = visualLines.map((line) => line.text).join('\n');
-  return { text, wordCount: words.length, rowCount: visualLines.length, lines: visualLines };
+  const lines = rows
+    .sort((a, b) => a.centerY - b.centerY)
+    .map((row) => {
+      row.words.sort((a, b) => a.left - b.left);
+      return {
+        text: row.words.map((word) => word.text).join(' '),
+        top: row.top,
+        bottom: row.bottom,
+        left: Math.min(...row.words.map((word) => word.left)),
+        right: Math.max(...row.words.map((word) => word.right)),
+      };
+    })
+    .filter((line) => line.text);
+  return { text: lines.map((line) => line.text).join('\n'), lines, wordCount: words.length };
 }
 
-function tanitaIndicatorAnchorsFromVision(response, imageHeight) {
-  const spatial = googleVisionSpatialResult(response);
-  const lines = spatial.lines || [];
-  const height = Math.max(1, Number(imageHeight) || Number(response?.fullTextAnnotation?.pages?.[0]?.height) || 1);
-  const indicatorIndex = lines.findIndex((line) => /\bINDICATOR\b/i.test(line.text));
-  if (indicatorIndex < 0) return null;
-
-  const labelSpecs = [
+function indicatorAnchors(response, imageHeight) {
+  const lines = spatialText(response).lines;
+  const start = lines.findIndex((line) => /\bINDICATOR\b/i.test(line.text));
+  if (start < 0) return null;
+  const specs = [
     ['fat_percent', /(?:^|\s)FAT\s*%/i],
     ['bmi', /(?:^|\s)BMI(?:\s|$)/i],
     ['visceral_fat', /VISCERAL\s+FAT\s+RATING/i],
@@ -669,639 +384,216 @@ function tanitaIndicatorAnchorsFromVision(response, imageHeight) {
     ['bmr', /(?:^|\s)BMR(?:\s|$)/i],
     ['physique', /PHYSIQUE\s+RATING/i],
   ];
+
   const found = [];
-  let cursor = indicatorIndex + 1;
-  for (const [name, pattern] of labelSpecs) {
-    let matchIndex = -1;
-    for (let i = cursor; i < lines.length; i += 1) {
-      if (pattern.test(lines[i].text)) {
-        matchIndex = i;
-        break;
-      }
-      if (name !== 'physique' && /PHYSIQUE\s+RATING/i.test(lines[i].text)) break;
-    }
-    if (matchIndex < 0) continue;
-    found.push({ name, ...lines[matchIndex] });
-    cursor = matchIndex + 1;
+  let cursor = start + 1;
+  for (const [name, pattern] of specs) {
+    const index = lines.findIndex((line, i) => i >= cursor && pattern.test(line.text));
+    if (index < 0) continue;
+    found.push({ name, ...lines[index] });
+    cursor = index + 1;
   }
 
   const anchors = {};
+  const height = Math.max(1, imageHeight);
   for (let i = 0; i < found.length; i += 1) {
-    const current = found[i];
-    if (!['fat_percent', 'bmi', 'muscle_mass', 'bmr'].includes(current.name)) continue;
-    const next = found[i + 1] || null;
-    anchors[current.name] = {
-      bottom_ratio: Math.max(0, Math.min(1, current.bottom / height)),
-      next_top_ratio: next ? Math.max(0, Math.min(1, next.top / height)) : null,
-      label: current.text,
+    if (!['fat_percent', 'bmi', 'muscle_mass', 'bmr'].includes(found[i].name)) continue;
+    anchors[found[i].name] = {
+      bottom_ratio: found[i].bottom / height,
+      next_top_ratio: found[i + 1] ? found[i + 1].top / height : null,
     };
   }
   return Object.keys(anchors).length ? anchors : null;
 }
 
-function insertDiagnosticDetails(diagnostic, details = []) {
-  const clean = details.filter(Boolean).map((line) => redactDiagnosticText(line));
-  if (!clean.length) return diagnostic;
-  const marker = '--- END EXTRACTION DIAGNOSTICS ---';
-  const index = diagnostic.lastIndexOf(marker);
-  if (index < 0) return `${diagnostic}\n${clean.join('\n')}`;
-  return `${diagnostic.slice(0, index)}${clean.join('\n')}\n${diagnostic.slice(index)}`;
-}
-
-function tanitaBioCount(parsed) {
-  return [
-    parsed?.bioelectrical?.['6.25_khz']?.r_ohm,
-    parsed?.bioelectrical?.['6.25_khz']?.x_ohm,
-    parsed?.bioelectrical?.['50_khz']?.r_ohm,
-    parsed?.bioelectrical?.['50_khz']?.x_ohm,
-  ].filter((value) => value != null).length;
-}
-
-function tanitaCoreCount(parsed) {
-  const keys = ['weight_kg', 'fat_percent', 'ffm_kg', 'muscle_mass_kg', 'tbw_kg', 'tbw_percent', 'bone_mass_kg', 'bmr_kcal', 'visceral_fat_rating', 'bmi'];
-  return keys.filter((key) => parsed?.metrics?.[key] != null).length;
-}
-
-function tanitaCloudResultIsStrong(parsed) {
-  if (!parsed) return false;
-  return (parsed.extraction?.completeness || 0) >= 0.90
-    && (parsed.extraction?.warnings?.length || 0) <= 2
-    && (parsed.extraction?.conflicted_fields?.length || 0) === 0
-    && tanitaBioCount(parsed) >= 3;
-}
-
-function redactDiagnosticText(value) {
+function redact(value) {
   return String(value ?? '')
     .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[redacted-api-key]')
     .replace(/([?&](?:key|api_key)=)[^&\s]+/gi, '$1[redacted]')
-    .replace(/(x-goog-api-key\s*[:=]\s*)\S+/gi, '$1[redacted]')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
-function cloudErrorInfo(payload) {
-  const error = payload?.error || null;
-  const details = Array.isArray(error?.details) ? error.details : [];
-  const info = details.find((detail) => /ErrorInfo$/i.test(String(detail?.['@type'] || ''))) || null;
-  const legacyReasons = Array.isArray(error?.errors)
-    ? error.errors.map((item) => item?.reason).filter(Boolean)
-    : [];
-  const reasons = [...new Set([info?.reason, ...legacyReasons].filter(Boolean))];
-
-  const safeMetadata = {};
-  for (const [key, value] of Object.entries(info?.metadata || {})) {
-    if (/key|credential|token|authorization|secret/i.test(key)) continue;
-    safeMetadata[key] = redactDiagnosticText(value);
-  }
-
+function visionError(payload) {
+  const error = payload?.error;
   return {
-    code: error?.code ?? null,
     status: error?.status || '',
-    message: redactDiagnosticText(error?.message || ''),
-    reasons,
-    metadata: safeMetadata,
+    message: redact(error?.message || ''),
+    code: error?.code ?? null,
   };
 }
 
-function browserOrigin() {
-  try {
-    return window.location?.origin || 'unknown';
-  } catch {
-    return 'unknown';
-  }
-}
-
-function browserUserAgent() {
-  try {
-    return navigator.userAgent || 'unknown';
-  } catch {
-    return 'unknown';
-  }
-}
-
-function makeCloudDiagnostic({
-  configured = true,
-  attempted = false,
-  imageNames = [],
-  elapsedMs = null,
-  response = null,
-  payload = null,
-  rawResponseText = '',
-  textCandidateCount = null,
-  perImageErrors = [],
-  outcome = '',
-} = {}) {
-  const lines = [
-    '--- EXTRACTION DIAGNOSTICS ---',
-    `Extractor build: ${EXTRACTOR_BUILD}`,
-    `Cloud Vision configured: ${configured ? 'yes' : 'no'}`,
-    `Cloud Vision request attempted: ${attempted ? 'yes' : 'no'}`,
-  ];
-
-  if (attempted) {
-    lines.push(
-      'Cloud Vision endpoint: POST https://vision.googleapis.com/v1/images:annotate',
-      'Cloud Vision authentication: x-goog-api-key header (key redacted)',
-      `Page origin: ${browserOrigin()}`,
-      `Browser: ${redactDiagnosticText(browserUserAgent())}`,
-      `Batch images: ${imageNames.length}${imageNames.length ? ` (${imageNames.join(', ')})` : ''}`,
-    );
-    if (elapsedMs != null) lines.push(`Request elapsed: ${Math.round(elapsedMs)} ms`);
-    if (response) {
-      lines.push(`HTTP result: ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`);
-      const requestId = response.headers?.get?.('x-request-id') || response.headers?.get?.('x-guploader-uploadid');
-      if (requestId) lines.push(`Google request id: ${redactDiagnosticText(requestId)}`);
-    } else {
-      lines.push('HTTP result: no response (fetch/network/CORS failure before a readable response)');
-    }
-
-    const topError = cloudErrorInfo(payload);
-    if (topError.code != null) lines.push(`Google error code: ${topError.code}`);
-    if (topError.status) lines.push(`Google error status: ${topError.status}`);
-    if (topError.reasons.length) lines.push(`Google error reason: ${topError.reasons.join(', ')}`);
-    if (topError.message) lines.push(`Google error message: ${topError.message}`);
-    if (Object.keys(topError.metadata).length) {
-      lines.push(`Google error metadata: ${redactDiagnosticText(JSON.stringify(topError.metadata))}`);
-    }
-
-    if (!payload && rawResponseText) {
-      lines.push(`Non-JSON response: ${redactDiagnosticText(rawResponseText).slice(0, 800)}`);
-    }
-    if (textCandidateCount != null) lines.push(`OCR text responses: ${textCandidateCount}/${imageNames.length}`);
-    if (perImageErrors.length) {
-      lines.push(`Per-image errors: ${perImageErrors.length}`);
-      for (const item of perImageErrors) {
-        lines.push(`- ${item.name}: ${redactDiagnosticText(item.message)}`);
-      }
-    }
-  }
-
-  if (outcome) lines.push(`Cloud Vision outcome: ${redactDiagnosticText(outcome)}`);
-  lines.push('--- END EXTRACTION DIAGNOSTICS ---');
-  return lines.join('\n');
-}
-
-function cloudVisionFailure(message, diagnostic, summary = '') {
-  const error = new Error(message);
-  error.cloudVisionDiagnostic = diagnostic;
-  error.cloudVisionSummary = summary;
-  return error;
-}
-
-async function googleVisionReceipt(canvas, { onStatus, fileName = '' } = {}) {
+async function runVision(canvas, { onStatus, fileName = '' } = {}) {
   const apiKey = String(CONFIG.googleVisionApiKey || '').trim();
-  if (!apiKey) return null;
+  if (!apiKey) throw new Error('Google Cloud Vision is not configured. Add googleVisionApiKey in config.js.');
 
-  const filenameLooksTanita = /TANITA|DC[-_ ]?360/i.test(fileName);
-  const images = [{ name: 'FULL', canvas }];
+  const images = [
+    ['FULL', canvas],
+    ['INPUT', cropCanvas(canvas, 0.00, 0.30)],
+    ['RESULT', cropCanvas(canvas, 0.22, 0.56)],
+    ['RANGE', cropCanvas(canvas, 0.48, 0.70)],
+    ['BOTTOM', cropCanvas(canvas, 0.78, 1.00)],
+  ];
+  setStatus(onStatus, 'Reading report with Google Cloud Vision…');
 
-  // A full receipt plus four source-specific crops is much more reliable on
-  // faint thermal printing than one monolithic OCR call. Cloud Vision batches
-  // them in a single HTTP request; each crop remains an independent OCR vote.
-  if (filenameLooksTanita) {
-    images.push(
-      { name: 'INPUT', canvas: cropCanvas(canvas, 0.00, 0.30) },
-      { name: 'RESULT', canvas: cropCanvas(canvas, 0.22, 0.56) },
-      { name: 'RANGE', canvas: cropCanvas(canvas, 0.48, 0.70) },
-      { name: 'BIOELECTRICAL', canvas: cropCanvas(canvas, 0.80, 1.00) },
-    );
-  }
-
-  const imageNames = images.map(({ name }) => name);
-  setStatus(onStatus, `Cloud OCR: Google Vision (${images.length} image${images.length === 1 ? '' : 's'})…`);
-  const requests = images.map(({ canvas: imageCanvas }) => ({
-    image: { content: canvasBase64Jpeg(imageCanvas) },
-    features: [{ type: 'DOCUMENT_TEXT_DETECTION', model: 'builtin/latest' }],
-    imageContext: { languageHints: ['en'] },
-  }));
-
-  const startedAt = performance.now();
+  const started = performance.now();
   let response;
   try {
     response = await fetch('https://vision.googleapis.com/v1/images:annotate', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Goog-Api-Key': apiKey,
-      },
-      body: JSON.stringify({ requests }),
+      headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': apiKey },
+      body: JSON.stringify({
+        requests: images.map(([, image]) => ({
+          image: { content: canvasBase64Jpeg(image) },
+          features: [{ type: 'DOCUMENT_TEXT_DETECTION', model: 'builtin/latest' }],
+          imageContext: { languageHints: ['en'] },
+        })),
+      }),
     });
-  } catch (cause) {
-    const elapsedMs = performance.now() - startedAt;
-    const causeMessage = redactDiagnosticText(cause?.message || cause || 'Unknown fetch error');
-    const diagnostic = makeCloudDiagnostic({
-      attempted: true,
-      imageNames,
-      elapsedMs,
-      outcome: `request failed before an HTTP response was readable: ${causeMessage}`,
-    });
-    throw cloudVisionFailure(
-      `Google Cloud Vision OCR request failed before an HTTP response was readable: ${causeMessage}`,
-      diagnostic,
-      'network/CORS error',
-    );
+  } catch (error) {
+    throw new Error(`Google Cloud Vision request failed: ${redact(error.message || error)}`);
   }
 
-  const elapsedMs = performance.now() - startedAt;
-  const rawResponseText = await response.text();
+  const raw = await response.text();
   let payload = null;
-  try {
-    payload = rawResponseText ? JSON.parse(rawResponseText) : null;
-  } catch {
-    // The diagnostic section records a short redacted response excerpt.
-  }
-
+  try { payload = raw ? JSON.parse(raw) : null; } catch {}
   if (!response.ok) {
-    const info = cloudErrorInfo(payload);
-    const summary = `HTTP ${response.status}${info.status ? ` ${info.status}` : ''}`;
-    const diagnostic = makeCloudDiagnostic({
-      attempted: true,
-      imageNames,
-      elapsedMs,
-      response,
-      payload,
-      rawResponseText,
-      outcome: 'request rejected; local Tesseract fallback will be used',
-    });
-    const detail = info.message || `HTTP ${response.status}`;
-    throw cloudVisionFailure(`Google Cloud Vision OCR failed: ${detail}`, diagnostic, summary);
+    const info = visionError(payload);
+    throw new Error(`Google Cloud Vision failed (${response.status}${info.status ? ` ${info.status}` : ''}): ${info.message || 'request rejected'}`);
   }
 
   const responses = payload?.responses || [];
-  const textCandidates = [];
-  const displayCandidates = [];
-  const perImageErrors = [];
-  let spatialResponseCount = 0;
-  let ocrTextResponseCount = 0;
-  let indicatorLabelAnchors = null;
-  const spatialDetails = [];
+  const candidates = [];
+  const diagnostics = [
+    '--- EXTRACTION DIAGNOSTICS ---',
+    `Extractor build: ${EXTRACTOR_BUILD}`,
+    'Cloud Vision configured: yes',
+    'Cloud Vision request attempted: yes',
+    `HTTP result: ${response.status}`,
+    `Request elapsed: ${Math.round(performance.now() - started)} ms`,
+  ];
+
   for (let i = 0; i < images.length; i += 1) {
     const item = responses[i];
+    const name = images[i][0];
     if (item?.error?.message) {
-      perImageErrors.push({ name: images[i].name, message: item.error.message });
+      diagnostics.push(`${name}: error - ${redact(item.error.message)}`);
       continue;
     }
-
-    const naturalText = googleVisionText(item).trim();
-    const spatialResult = googleVisionSpatialResult(item);
-    const spatialText = spatialResult.text.trim();
-    if (i === 0 && filenameLooksTanita) {
-      indicatorLabelAnchors = tanitaIndicatorAnchorsFromVision(item, images[i].canvas.height);
-    }
-    spatialDetails.push(`${images[i].name} spatial geometry: ${spatialResult.wordCount} words -> ${spatialResult.rowCount} visual rows`);
-    if (naturalText || spatialText) ocrTextResponseCount += 1;
-
-    // Parse the spatially reconstructed rows whenever geometry is available.
-    // Unlike fullTextAnnotation.text this preserves TANITA's label/value rows.
-    if (spatialText) {
-      spatialResponseCount += 1;
-      const name = `GOOGLE VISION ${images[i].name} (SPATIAL)`;
-      textCandidates.push({ name, text: spatialText });
-      displayCandidates.push({ name, text: spatialText });
-    } else if (naturalText) {
-      const name = `GOOGLE VISION ${images[i].name}`;
-      textCandidates.push({ name, text: naturalText });
-      displayCandidates.push({ name, text: naturalText });
-    }
-
-    // Keep the native reading-order text for the full page as a debugging aid.
-    // It is intentionally not used as a parser vote when spatial text exists.
-    if (i === 0 && naturalText && spatialText && naturalText !== spatialText) {
-      displayCandidates.push({ name: 'GOOGLE VISION FULL (NATIVE READING ORDER)', text: naturalText });
-    }
+    const spatial = spatialText(item);
+    const native = String(item?.fullTextAnnotation?.text || item?.textAnnotations?.[0]?.description || '').trim();
+    const text = spatial.text || native;
+    diagnostics.push(`${name}: ${spatial.wordCount} words, ${spatial.lines.length} visual rows${text ? '' : ', no text'}`);
+    if (text) candidates.push({ name, text, native, response: item });
   }
+  diagnostics.push('--- END EXTRACTION DIAGNOSTICS ---');
 
-  let diagnostic = makeCloudDiagnostic({
-    attempted: true,
-    imageNames,
-    elapsedMs,
-    response,
-    payload,
-    rawResponseText,
-    textCandidateCount: ocrTextResponseCount,
-    perImageErrors,
-    outcome: textCandidates.length
-      ? `request succeeded; ${ocrTextResponseCount} OCR response${ocrTextResponseCount === 1 ? '' : 's'} contained text`
-      : 'request succeeded at HTTP level but returned no usable OCR text; local fallback will be used',
-  });
-  diagnostic = insertDiagnosticDetails(diagnostic, [
-    `Spatial row reconstruction: ${spatialResponseCount}/${images.length} OCR image${images.length === 1 ? '' : 's'}`,
-    spatialResponseCount
-      ? 'Parser input: Cloud Vision word geometry reconstructed into visual rows'
-      : 'Parser input: native Cloud Vision reading order (no word geometry returned)',
-    ...spatialDetails,
-    filenameLooksTanita
-      ? `Indicator label anchors: ${Object.keys(indicatorLabelAnchors || {}).join(', ') || 'none (layout fallback will be used)'}`
-      : '',
-  ]);
+  if (!candidates.length) throw new Error('Google Cloud Vision returned no readable text.');
 
-  if (!textCandidates.length) {
-    throw cloudVisionFailure(
-      'Google Cloud Vision returned no OCR text.',
-      diagnostic,
-      perImageErrors.length ? 'per-image OCR errors' : 'empty OCR response',
-    );
-  }
-
-  const combinedText = displayCandidates.map(({ name, text }) => `--- ${name} ---\n${text}`).join('\n');
-  const detected = detectBodyCompositionSource(textCandidates[0].text, fileName);
-  const source = filenameLooksTanita ? 'tanita' : detected;
-
-  if (source === 'tanita') {
-    const tanitaParses = textCandidates.map(({ text }) => parseTanitaText(text, { sourceName: fileName }));
-    const parsed = mergeTanitaParses(tanitaParses);
-    const fullParsed = /FULL/.test(textCandidates[0]?.name || '') ? tanitaParses[0] : null;
-    // Crops are recovery votes, not peers of a complete full-page Vision read.
-    // If the spatial full page is already internally consistent, a single crop
-    // misreading one digit should not force several slow local-Tesseract passes.
-    const fullStrong = tanitaCloudResultIsStrong(fullParsed);
-    const strong = fullStrong || tanitaCloudResultIsStrong(parsed);
-    diagnostic = insertDiagnosticDetails(diagnostic, [
-      `Cloud parser completeness: ${Math.round((parsed?.extraction?.completeness || 0) * 100)}%`,
-      `Cloud parser core fields: ${tanitaCoreCount(parsed)}/10`,
-      `Cloud parser bioelectrical fields: ${tanitaBioCount(parsed)}/4`,
-      `Cloud parser conflicts: ${(parsed?.extraction?.conflicted_fields || []).join(', ') || 'none'}`,
-      `Full-page spatial candidate strong: ${fullStrong ? 'yes' : 'no'}`,
-      `Cloud parser warnings: ${(parsed?.extraction?.warnings || []).length}`,
-      `Local Tesseract required: ${strong ? 'no' : 'yes (Cloud parse did not meet the strong-result threshold)'}`,
-    ]);
-    return {
-      source: 'tanita',
-      parsed,
-      text: combinedText,
-      method: 'google-vision:spatial-document-consensus',
-      textCandidates,
-      tanitaParses,
-      indicatorLabelAnchors,
-      diagnostic,
-    };
-  }
-
-  if (source === 'accuniq') {
-    // Full-page document OCR preserves ACCUNIQ's table text well; parse the
-    // full response first, then fall back to all cloud text if needed.
-    let parsed = parseAccuniqText(textCandidates[0].text, { sourceName: fileName });
-    if ((parsed.extraction?.completeness || 0) < 0.75) {
-      parsed = parseAccuniqText(combinedText, { sourceName: fileName });
-    }
-    return {
-      source: 'accuniq',
-      parsed,
-      text: combinedText,
-      method: 'google-vision:document-text',
-      textCandidates,
-      tanitaParses: [],
-      diagnostic,
-    };
-  }
+  const full = candidates.find((candidate) => candidate.name === 'FULL') || candidates[0];
+  const source = detectBodyCompositionSource(`${full.text}\n${full.native}`, fileName);
+  const anchors = source === 'tanita' ? indicatorAnchors(full.response, canvas.height) : null;
+  const displayText = candidates.map((candidate) => `--- GOOGLE VISION ${candidate.name} (SPATIAL) ---\n${candidate.text}`).join('\n');
 
   return {
-    source: 'unknown',
-    parsed: null,
-    text: combinedText,
-    method: 'google-vision:document-text',
-    textCandidates,
-    tanitaParses: [],
-    diagnostic,
+    source,
+    candidates,
+    anchors,
+    diagnostic: diagnostics.join('\n'),
+    displayText,
   };
 }
 
-async function ocrReceipt(canvas, { onStatus, fileName = '', seedTextCandidates = [], seedTanitaParses = [] } = {}) {
-  if (!window.Tesseract?.createWorker) {
-    throw new Error('OCR engine did not load. Check your internet connection and reload the page.');
-  }
+function parseEmbedded(text, fileName) {
+  const source = detectBodyCompositionSource(text, fileName);
+  if (source === 'tanita') return { source, parsed: parseTanitaText(text, { sourceName: fileName }) };
+  if (source === 'accuniq') return { source, parsed: parseAccuniqText(text, { sourceName: fileName }) };
+  return { source: 'unknown', parsed: null };
+}
 
-  setStatus(onStatus, 'Loading OCR engine…');
-  const worker = await window.Tesseract.createWorker('eng');
-  try {
-    await worker.setParameters({
-      tessedit_pageseg_mode: window.Tesseract.PSM?.SINGLE_BLOCK || '6',
-      preserve_interword_spaces: '1',
+function bodyLog(source, parsed, fileName, method) {
+  if (source === 'tanita') return toBodyCompositionLog(parsed, { sourceName: fileName, method });
+  if (source === 'accuniq') return toAccuniqBodyCompositionLog(parsed, { sourceName: fileName, method });
+  throw new Error('Unsupported body-composition source.');
+}
+
+function completeness(parsed) {
+  return parsed?.extraction?.completeness || 0;
+}
+
+function diagnosticIndicatorLines(parsed) {
+  return [['fat_percent', 'Fat %'], ['bmi', 'BMI'], ['muscle_mass', 'Muscle mass'], ['bmr', 'BMR']]
+    .map(([key, label]) => {
+      const value = parsed?.indicators?.[key];
+      return value?.reading
+        ? `Indicator ${label}: ${value.reading}; position=${value.position}; confidence=${value.confidence}; locator=${value.locator}`
+        : `Indicator ${label}: not detected`;
     });
-
-    const textCandidates = [...seedTextCandidates];
-    const tanitaParses = [...seedTanitaParses];
-    const remember = (name, text) => {
-      textCandidates.push({ name, text });
-      tanitaParses.push(parseTanitaText(text, { sourceName: fileName }));
-    };
-
-    setStatus(onStatus, 'OCR pass 1: full page…');
-    const raw = await recognize(worker, canvas);
-    const first = parseForSource(raw, fileName);
-    if (first.source === 'accuniq' && first.parsed.extraction.completeness >= 0.75) {
-      return { text: raw, method: 'ocr:raw', source: first.source, parsed: first.parsed };
-    }
-    if (first.source === 'tanita') remember('RAW FULL', raw);
-
-    const enhanced = enhanceContrast(canvas);
-    setStatus(onStatus, 'OCR pass 2: contrast-enhanced page…');
-    const enhancedText = await recognize(worker, enhanced);
-    const second = parseForSource(enhancedText, fileName);
-    if (second.source === 'tanita') remember('ENHANCED FULL', enhancedText);
-
-    // ACCUNIQ reports have a different page layout from TANITA receipts. Full-page
-    // OCR is more reliable than applying TANITA-specific crop coordinates.
-    if (second.source === 'accuniq') {
-      const combined = `${enhancedText}\n--- RAW FULL ---\n${raw}`;
-      return { text: combined, method: 'ocr:enhanced', source: second.source, parsed: second.parsed };
-    }
-
-    // A very clean TANITA scan can stop here. Candidate merging still protects
-    // against one pass reading a digit differently from the other.
-    if (tanitaParses.length >= 2) {
-      const quickMerged = mergeTanitaParses(tanitaParses);
-      if (
-        quickMerged?.extraction?.completeness >= 0.98
-        && quickMerged.extraction.warnings.length <= 1
-        && (quickMerged.extraction.conflicted_fields?.length || 0) === 0
-      ) {
-        return {
-          text: textCandidates.map(({ name, text }) => `--- ${name} ---\n${text}`).join('\n'),
-          method: seedTanitaParses.length ? 'google-vision+tesseract:consensus-full' : 'ocr:consensus-full',
-          source: 'tanita',
-          parsed: quickMerged,
-        };
-      }
-    }
-
-    const zones = [
-      ['header/input', 0.00, 0.30],
-      ['result', 0.22, 0.56],
-      ['desirable range', 0.48, 0.70],
-      ['bioelectrical', 0.82, 1.00],
-    ];
-    for (let i = 0; i < zones.length; i += 1) {
-      const [name, y0, y1] = zones[i];
-      setStatus(onStatus, `OCR pass ${i + 3}: ${name}…`);
-      const crop = cropCanvas(canvas, y0, y1);
-      const locallyEnhanced = localContrastCanvas(crop);
-      const zoneText = await recognize(worker, locallyEnhanced);
-      textCandidates.push({ name: name.toUpperCase(), text: zoneText });
-      tanitaParses.push(parseTanitaText(zoneText, { sourceName: fileName }));
-    }
-
-    let merged = mergeTanitaParses(tanitaParses);
-
-    const missingInput = !merged?.input?.age || !merged?.input?.height_cm || !merged?.input?.gender || merged?.input?.clothes_weight_kg == null;
-    if (missingInput) {
-      setStatus(onStatus, 'OCR fallback: high-threshold input block…');
-      const headerCrop = cropCanvas(canvas, 0.00, 0.30);
-      const headerText = await recognize(worker, thresholdCanvas(headerCrop, 220));
-      textCandidates.push({ name: 'THRESHOLDED INPUT', text: headerText });
-      tanitaParses.push(parseTanitaText(headerText, { sourceName: fileName }));
-      merged = mergeTanitaParses(tanitaParses);
-    }
-
-    // On particularly faint thermal receipts, a binary pass can recover a
-    // decimal digit that both grayscale full-page passes miss. Keep this
-    // conditional so normal iPhone imports don't pay for another OCR pass.
-    if (!merged || merged.extraction.completeness < 0.85 || merged.extraction.warnings.length > 3) {
-      setStatus(onStatus, 'OCR fallback: thresholded result block…');
-      const resultCrop = cropCanvas(canvas, 0.22, 0.56);
-      const binaryText = await recognize(worker, thresholdCanvas(resultCrop));
-      textCandidates.push({ name: 'THRESHOLDED RESULT', text: binaryText });
-      tanitaParses.push(parseTanitaText(binaryText, { sourceName: fileName }));
-      merged = mergeTanitaParses(tanitaParses);
-    }
-
-    const text = textCandidates.map(({ name, text: value }) => `--- ${name} ---\n${value}`).join('\n');
-    const source = detectBodyCompositionSource(text, fileName);
-    if (source === 'tanita' || /TANITA/i.test(fileName)) {
-      return { text, method: seedTanitaParses.length ? 'google-vision+tesseract:consensus-multi-pass' : 'ocr:consensus-multi-pass', source: 'tanita', parsed: merged };
-    }
-    const parsed = parseForSource(text, fileName);
-    return { text, method: 'ocr:multi-pass', source: parsed.source, parsed: parsed.parsed };
-  } finally {
-    await worker.terminate();
-  }
 }
 
 async function readBodyCompositionReport(file, { onStatus } = {}) {
-  const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+  const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '');
   setStatus(onStatus, isPdf ? 'Opening PDF…' : 'Opening image…');
   const { embeddedText, canvas } = isPdf ? await readPdf(file) : await readImage(file);
-  const cloudConfigured = Boolean(String(CONFIG.googleVisionApiKey || '').trim());
 
-  const embedded = parseForSource(embeddedText, file.name);
-  const embeddedCompleteEnough = embedded.source === 'accuniq'
-    ? (embedded.parsed?.extraction?.completeness || 0) >= 0.75
-    : embedded.source === 'tanita'
-      ? (embedded.parsed?.extraction?.completeness || 0) >= 0.90
-      : false;
-  if (embedded.source !== 'unknown' && embeddedText.trim().length > 40 && embeddedCompleteEnough) {
-    const label = labelForSource(embedded.source);
-    setStatus(onStatus, `Detected ${label}; using embedded PDF text.`);
+  const embedded = parseEmbedded(embeddedText, file.name);
+  const embeddedUsable = embeddedText.length > 40 && (
+    (embedded.source === 'accuniq' && completeness(embedded.parsed) >= 0.75)
+    || (embedded.source === 'tanita' && completeness(embedded.parsed) >= 0.9)
+  );
+
+  if (embeddedUsable) {
     const parsed = embedded.source === 'tanita' ? attachTanitaIndicators(embedded.parsed, canvas) : embedded.parsed;
-    let diagnostic = makeCloudDiagnostic({
-      configured: cloudConfigured,
-      attempted: false,
-      outcome: 'not attempted because embedded PDF text was complete enough',
-    });
-    if (embedded.source === 'tanita') diagnostic = insertDiagnosticDetails(diagnostic, tanitaIndicatorDiagnosticLines(parsed));
+    const diagnostics = [
+      '--- EXTRACTION DIAGNOSTICS ---',
+      `Extractor build: ${EXTRACTOR_BUILD}`,
+      'Cloud Vision request attempted: no (embedded PDF text was sufficient)',
+      ...(embedded.source === 'tanita' ? diagnosticIndicatorLines(parsed) : []),
+      '--- END EXTRACTION DIAGNOSTICS ---',
+    ].join('\n');
+    setStatus(onStatus, `Detected ${labelForSource(embedded.source)}. Review the extracted values.`);
     return {
       source: embedded.source,
-      sourceLabel: label,
+      sourceLabel: labelForSource(embedded.source),
       parsed,
-      log: logForSource(embedded.source, parsed, file.name, 'pdf-text'),
-      rawText: `${diagnostic}\n\n--- FINAL EXTRACTION METHOD ---\npdf-text\n\n--- EMBEDDED PDF TEXT ---\n${embeddedText}`,
+      log: bodyLog(embedded.source, parsed, file.name, 'pdf-text'),
+      rawText: `${diagnostics}\n\n--- EMBEDDED PDF TEXT ---\n${embeddedText}`,
       previewCanvas: canvas,
     };
   }
 
-  let cloud = null;
-  let cloudDiagnostic = cloudConfigured
-    ? ''
-    : makeCloudDiagnostic({
-      configured: false,
-      attempted: false,
-      outcome: 'not configured; local Tesseract OCR will be used',
-    });
-
-  if (cloudConfigured) {
-    try {
-      cloud = await googleVisionReceipt(canvas, { onStatus, fileName: file.name });
-      cloudDiagnostic = cloud?.diagnostic || makeCloudDiagnostic({
-        configured: true,
-        attempted: true,
-        outcome: 'request completed, but no diagnostic payload was produced',
-      });
-      if (cloud?.source === 'accuniq' && (cloud.parsed?.extraction?.completeness || 0) >= 0.75) {
-        const label = labelForSource('accuniq');
-        setStatus(onStatus, `Detected ${label} with Google Cloud Vision. Review the fields before saving.`);
-        return {
-          source: 'accuniq',
-          sourceLabel: label,
-          parsed: cloud.parsed,
-          log: logForSource('accuniq', cloud.parsed, file.name, cloud.method),
-          rawText: `${finalDiagnostic}\n\n--- FINAL EXTRACTION METHOD ---\n${cloud.method}\n\n${cloud.text}`,
-          previewCanvas: canvas,
-        };
-      }
-      if (cloud?.source === 'tanita' && tanitaCloudResultIsStrong(cloud.parsed)) {
-        const parsed = attachTanitaIndicators(cloud.parsed, canvas, cloud.indicatorLabelAnchors);
-        const finalDiagnostic = insertDiagnosticDetails(cloudDiagnostic, tanitaIndicatorDiagnosticLines(parsed));
-        const label = labelForSource('tanita');
-        setStatus(onStatus, `Detected ${label} with Google Cloud Vision. Review the fields before saving.`);
-        return {
-          source: 'tanita',
-          sourceLabel: label,
-          parsed,
-          log: logForSource('tanita', parsed, file.name, cloud.method),
-          rawText: `${cloudDiagnostic}\n\n--- FINAL EXTRACTION METHOD ---\n${cloud.method}\n\n${cloud.text}`,
-          previewCanvas: canvas,
-        };
-      }
-      if (cloud?.source !== 'unknown') {
-        setStatus(onStatus, 'Cloud OCR was partial; combining it with local OCR…');
-      }
-    } catch (error) {
-      console.warn(error);
-      cloudDiagnostic = error?.cloudVisionDiagnostic || makeCloudDiagnostic({
-        configured: true,
-        attempted: true,
-        outcome: `request failed: ${redactDiagnosticText(error?.message || error)}`,
-      });
-      const summary = redactDiagnosticText(error?.cloudVisionSummary || 'request error');
-      setStatus(onStatus, `Google Cloud Vision failed (${summary}); falling back to local OCR…`);
-      cloud = null;
-    }
-  }
-
-  const { text, method, source: ocrSource, parsed: ocrParsed } = await ocrReceipt(canvas, {
-    onStatus,
-    fileName: file.name,
-    seedTextCandidates: cloud?.source === 'tanita' ? cloud.textCandidates : [],
-    seedTanitaParses: cloud?.source === 'tanita' ? cloud.tanitaParses : [],
-  });
-  const parsedResult = ocrParsed ? { source: ocrSource, parsed: ocrParsed } : parseForSource(text, file.name);
-  const source = parsedResult.source !== 'unknown' ? parsedResult.source : ocrSource;
+  const vision = await runVision(canvas, { onStatus, fileName: file.name });
+  let source = vision.source;
   if (source === 'unknown') {
-    throw new Error('Could not recognize this body-composition report. Supported sources are TANITA DC-360 and ACCUNIQ.');
+    source = /TANITA|DC[-_ ]?360/i.test(file.name || '') ? 'tanita' : /ACCUNIQ/i.test(file.name || '') ? 'accuniq' : 'unknown';
   }
-  let parsed = parsedResult.parsed || parseForSource(text, file.name).parsed;
+  if (source === 'unknown') throw new Error('Could not recognize this report as TANITA DC-360 or ACCUNIQ.');
+
+  let parsed;
   if (source === 'tanita') {
-    parsed = attachTanitaIndicators(parsed, canvas, cloud?.indicatorLabelAnchors);
-    cloudDiagnostic = insertDiagnosticDetails(cloudDiagnostic, tanitaIndicatorDiagnosticLines(parsed));
+    parsed = mergeTanitaParses(vision.candidates.map((candidate) => parseTanitaText(candidate.text, { sourceName: file.name })));
+    parsed = attachTanitaIndicators(parsed, canvas, vision.anchors);
+  } else {
+    const parsedCandidates = vision.candidates.map((candidate) => parseAccuniqText(candidate.text, { sourceName: file.name }));
+    parsed = parsedCandidates.sort((a, b) => completeness(b) - completeness(a))[0];
   }
-  const label = labelForSource(source);
-  setStatus(onStatus, `Detected ${label}. Review the fields before saving.`);
+
+  const diagnostics = [
+    vision.diagnostic,
+    ...(source === 'tanita' ? diagnosticIndicatorLines(parsed) : []),
+    `Parser completeness: ${Math.round(completeness(parsed) * 100)}%`,
+    `Extraction source: ${source}`,
+  ].join('\n');
+
+  setStatus(onStatus, `Detected ${labelForSource(source)}. Review the extracted values.`);
   return {
     source,
-    sourceLabel: label,
+    sourceLabel: labelForSource(source),
     parsed,
-    log: logForSource(source, parsed, file.name, method),
-    rawText: `${cloudDiagnostic}\n\n--- FINAL EXTRACTION METHOD ---\n${method}\n\n--- OCR TEXT USED FOR PARSING ---\n${text}`,
+    log: bodyLog(source, parsed, file.name, 'google-vision:spatial'),
+    rawText: `${diagnostics}\n\n${vision.displayText}`,
     previewCanvas: canvas,
   };
 }
 
-const readTanitaReceipt = readBodyCompositionReport;
-
-export {
-  readBodyCompositionReport,
-  readTanitaReceipt,
-  enhanceContrast,
-  localContrastCanvas,
-  analyzeTanitaIndicators,
-};
+export { readBodyCompositionReport, analyzeTanitaIndicators };

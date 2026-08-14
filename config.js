@@ -1,25 +1,14 @@
-// One-time deployment configuration.
-// This file is public. Do not put a GitHub access token in this file.
 export const CONFIG = {
-  // GitHub account that owns the private data repository.
   githubOwner: 'AtonFreson',
   githubRepo: 'Fitness-Tracker-Data',
   githubBranch: 'main',
-
-  // Folder used by the tracker inside the private repository.
   dataRoot: 'data',
-
-  // Optional: Google Cloud Vision API key for much stronger OCR on scanned
-  // TANITA receipts. Leave blank to use the built-in local Tesseract fallback.
-  // This app is static, so ONLY use a key restricted to your GitHub Pages
-  // website and restricted to the Cloud Vision API. See setup notes.
   googleVisionApiKey: 'AIzaSyBR6MkWky4-FW06ooQMDHIF_pBUzfSgYjc',
 };
 
 export function configProblems(config = CONFIG) {
   const problems = [];
-  const placeholders = /YOUR_|example/i;
-  if (!config.githubOwner || placeholders.test(config.githubOwner)) problems.push('Set githubOwner in config.js.');
+  if (!config.githubOwner || /YOUR_|example/i.test(config.githubOwner)) problems.push('Set githubOwner in config.js.');
   if (!config.githubRepo) problems.push('Set githubRepo in config.js.');
   if (!config.githubBranch) problems.push('Set githubBranch in config.js.');
   if (!config.dataRoot) problems.push('Set dataRoot in config.js.');

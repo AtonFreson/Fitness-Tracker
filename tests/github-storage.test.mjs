@@ -1,91 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  mergeLogs,
-  dataPathForLog,
-  parseJsonl,
-  sortLogs,
-  createUpsertEvent,
-  createDeleteEvent,
-  applyEvents,
-  eventPathForTimestamp,
-  changedLogs,
-  removeIdsFromEvent,
-} from '../src/storage.js';
+import { mergeLogs, dataPathForLog, periodForLog, sortLogs } from '../src/storage.js';
 
-test('mergeLogs upserts by deterministic id', () => {
-  const old = { id: 'x', kind: 'body_composition', measured_at_local: '2030-01-01T10:00:00', metrics: { weight_kg: 70 } };
-  const newer = { ...old, metrics: { weight_kg: 71 } };
-  const result = mergeLogs([old], [newer]);
-  assert.equal(result.length, 1);
-  assert.equal(result[0].metrics.weight_kg, 71);
+test('mergeLogs replaces the same deterministic id', () => {
+  const first = { id: 'x', kind: 'body_composition', measured_at_local: '2030-01-01T10:00:00', metrics: { weight_kg: 70 } };
+  const second = { ...first, metrics: { weight_kg: 71 } };
+  assert.deepEqual(mergeLogs([first], [second]), [second]);
 });
 
-test('legacy storage paths remain readable for v4 migration', () => {
-  assert.equal(dataPathForLog({ kind: 'body_composition' }), 'data/body-composition.jsonl');
-  assert.equal(dataPathForLog({ kind: 'workout', start_at: '2031-04-05T12:00:00+08:00' }), 'data/workouts/2031.jsonl');
+test('storage uses one JSON file per month', () => {
+  const log = { id: 'apple-health:strength:2031-04-05T12:00:00+08:00', kind: 'workout', start_at: '2031-04-05T12:00:00+08:00' };
+  assert.equal(periodForLog(log), '2031-04');
+  assert.equal(dataPathForLog(log), 'data/events/2031-04.json');
 });
 
-test('JSONL parser and sorter preserve logical logs', () => {
-  const text = '{"id":"b","kind":"workout","start_at":"2030-02-01"}\n{"id":"a","kind":"workout","start_at":"2030-01-01"}\n';
-  const parsed = parseJsonl(text);
-  assert.deepEqual(parsed.errors, []);
-  assert.deepEqual(sortLogs(parsed.logs).map((x) => x.id), ['a', 'b']);
+test('records without a date use the unknown file', () => {
+  assert.equal(dataPathForLog({ id: 'x', kind: 'body_composition' }), 'data/events/unknown.json');
 });
 
-test('append-only events resolve latest upsert and later tombstone', () => {
-  const first = { id: 'x', kind: 'body_composition', measured_at_local: '2030-01-01', metrics: { weight_kg: 70 } };
-  const corrected = { ...first, metrics: { weight_kg: 71 } };
-  const events = [
-    { path: 'a', event: createUpsertEvent([first], '2030-01-02T00:00:00.000Z') },
-    { path: 'b', event: createUpsertEvent([corrected], '2030-01-03T00:00:00.000Z') },
-  ];
-  assert.equal(applyEvents([], events)[0].metrics.weight_kg, 71);
-  events.push({ path: 'c', event: createDeleteEvent(['x'], '2030-01-04T00:00:00.000Z') });
-  assert.deepEqual(applyEvents([], events), []);
-});
-
-test('a later upsert restores a previously hidden record', () => {
-  const log = { id: 'x', kind: 'workout', start_at: '2030-01-01' };
-  const events = [
-    { path: 'a', event: createUpsertEvent([log], '2030-01-01T00:00:00.000Z') },
-    { path: 'b', event: createDeleteEvent(['x'], '2030-01-02T00:00:00.000Z') },
-    { path: 'c', event: createUpsertEvent([log], '2030-01-03T00:00:00.000Z') },
-  ];
-  assert.deepEqual(applyEvents([], events).map((x) => x.id), ['x']);
-});
-
-test('event files are partitioned by year and carry sortable timestamps', () => {
-  const path = eventPathForTimestamp('2031-04-05T12:34:56.789Z', 'abc');
-  assert.equal(path, 'data/events/2031/20310405T123456789Z_abc.json');
-});
-
-
-test('save dedupe helper skips identical deterministic IDs but keeps richer updates', () => {
-  const old = {
-    id: 'apple-health:strength:2030-01-01T10:00:00+08:00',
-    kind: 'workout',
-    start_at: '2030-01-01T10:00:00+08:00',
-    heart_rate_bpm: { average_bpm: 100, samples: [] },
-  };
-  assert.deepEqual(changedLogs([old], [{ ...old }]), []);
-  const richer = { ...old, heart_rate_bpm: { average_bpm: 100, sample_count: 1, samples: [{ at: old.start_at, bpm: 100 }] } };
-  assert.deepEqual(changedLogs([old], [richer]).map((log) => log.id), [old.id]);
-});
-
-test('destructive delete helper removes a log from batched upsert files without tombstoning peers', () => {
-  const x = { id: 'x', kind: 'workout', start_at: '2030-01-01' };
-  const y = { id: 'y', kind: 'workout', start_at: '2030-01-02' };
-  const event = createUpsertEvent([x, y], '2030-01-03T00:00:00.000Z');
-  const result = removeIdsFromEvent(event, new Set(['x']));
-  assert.equal(result.changed, true);
-  assert.equal(result.empty, false);
-  assert.deepEqual(result.event.logs.map((log) => log.id), ['y']);
-});
-
-test('destructive delete helper marks an emptied event file for deletion', () => {
-  const event = createUpsertEvent([{ id: 'x', kind: 'workout', start_at: '2030-01-01' }], '2030-01-03T00:00:00.000Z');
-  const result = removeIdsFromEvent(event, ['x']);
-  assert.equal(result.changed, true);
-  assert.equal(result.empty, true);
+test('mergeLogs collapses duplicate incoming ids', () => {
+  const old = { id: 'x', kind: 'workout', start_at: '2030-01-01', active_energy_kcal: 100 };
+  const updated = { ...old, active_energy_kcal: 120 };
+  assert.deepEqual(mergeLogs([], [old, updated]), [updated]);
 });

@@ -7,7 +7,6 @@
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>Fitness Tracker</title>
   <link rel="stylesheet" href="./styles.css">
-  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/tesseract.min.js" defer></script>
 </head>
 <body>
   <section id="auth-gate" class="vault-gate" aria-live="polite">
@@ -15,16 +14,15 @@
       <div class="lock-mark" aria-hidden="true">🏋️</div>
       <p class="eyebrow">Private GitHub data</p>
       <h1 class="gate-title">Fitness Tracker</h1>
-      <p>The public Pages site contains the app only; measurements and workouts live in your configured <strong>private GitHub repository</strong>. The access token is kept in a private file there so another device only needs your normal GitHub login.</p>
+      <p>Measurements and workouts are stored in the configured private GitHub repository.</p>
       <div id="setup-problems" hidden></div>
 
       <div class="token-setup">
-        <p class="token-step"><strong>1.</strong> Open the saved token in your private repository. GitHub may ask you to sign in first. Copy the entire contents of <code>TRACKER_TOKEN.txt</code>.</p>
+        <p class="token-step"><strong>1.</strong> Open <code>TRACKER_TOKEN.txt</code> in the private repository and copy its contents.</p>
         <a id="saved-token-link" class="file-button github-link" href="#" target="_blank" rel="noopener">Open saved token on GitHub</a>
-        <p class="compact">Only during first-time setup or token replacement: <a id="create-token-link" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">create a new fine-grained token</a>, then save that token as the only contents of <code>TRACKER_TOKEN.txt</code> in the private repository.</p>
-        <p class="compact"><a href="https://github.com/settings/personal-access-tokens" target="_blank" rel="noopener">Manage GitHub tokens</a></p>
+        <p class="compact">For initial setup or token replacement: <a id="create-token-link" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">create a fine-grained token</a>.</p>
 
-        <p class="token-step"><strong>2.</strong> Return here and paste the copied token.</p>
+        <p class="token-step"><strong>2.</strong> Paste the token.</p>
         <label class="token-field">
           <span>GitHub token</span>
           <input id="github-token" type="password" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="github_pat_…">
@@ -37,7 +35,6 @@
       </div>
 
       <p id="auth-status" class="status" role="status"></p>
-      <p class="compact">On another phone or computer, use <strong>Open saved token on GitHub</strong>, sign in to GitHub normally, copy it, and connect. If remembered, the copied token is also cached in that browser for later visits.</p>
     </div>
   </section>
 
@@ -46,7 +43,7 @@
       <div>
         <p class="eyebrow">GitHub-synced · phone friendly</p>
         <h1>Fitness Tracker</h1>
-        <p class="subtitle">Automatic import for TANITA, ACCUNIQ, and zipped Apple Health exports.</p>
+        <p class="subtitle">Automatic import for TANITA, ACCUNIQ, and Apple Health exports.</p>
       </div>
       <div class="header-actions">
         <span id="github-user" class="badge"></span>
@@ -57,7 +54,7 @@
 
     <main>
       <section class="notice secure-notice">
-        <strong id="repo-visibility">Private repository</strong> · <code id="repo-name"></code>. GitHub is the canonical store. Saves create event files; explicit Delete actions remove matching log data from the current repository after confirmation. Git history may still retain older versions.
+        <strong id="repo-visibility">Private repository</strong> · <code id="repo-name"></code>. Logs are stored in monthly JSON files under <code>data/events/</code>.
       </section>
 
       <section class="card" id="import-card">
@@ -68,7 +65,7 @@
           </div>
           <span class="badge">PDF / image / XML / ZIP</span>
         </div>
-        <p>Choose one file. The tracker automatically distinguishes TANITA DC-360 scans, ACCUNIQ reports, Apple Health <code>export.xml</code>, and the original zipped Apple Health export.</p>
+        <p>Choose a TANITA or ACCUNIQ report, Apple Health <code>export.xml</code>, or the original Apple Health export ZIP.</p>
         <label class="file-button">
           <input id="import-file" type="file" accept="application/pdf,image/*,text/xml,application/xml,.xml,.zip,application/zip">
           Choose data file
@@ -94,9 +91,9 @@
       </section>
 
       <section class="card info-grid">
-        <div><p class="eyebrow">TANITA DC-360</p><h3>Scanned receipt</h3><p>Uses Google Vision spatial OCR when configured, falls back to local OCR, and reads the printed indicator bars from image geometry anchored to their labels.</p></div>
-        <div><p class="eyebrow">ACCUNIQ</p><h3>Body-composition report</h3><p>Reads ACCUNIQ Manager report text and keeps ACCUNIQ measurements as a distinct source series.</p></div>
-        <div><p class="eyebrow">Apple Health</p><h3>Upload the ZIP directly</h3><p>The importer locates <code>export.xml</code>, stores the individual heart-rate readings for strength workouts, and skips unchanged workout IDs when the full export is imported again.</p></div>
+        <div><p class="eyebrow">TANITA DC-360</p><h3>Scanned receipt</h3><p>Uses Google Cloud Vision word geometry for the printed values and image geometry for the four independent indicator bars.</p></div>
+        <div><p class="eyebrow">ACCUNIQ</p><h3>Body-composition report</h3><p>Uses the report text layer when available and Google Cloud Vision when OCR is needed.</p></div>
+        <div><p class="eyebrow">Apple Health</p><h3>Upload the ZIP directly</h3><p>Imports strength workouts with all heart-rate records included in the export. Re-importing the full export only updates changed workout IDs.</p></div>
       </section>
 
       <section class="card" id="logs-card">
@@ -107,10 +104,8 @@
         <div class="actions wrap">
           <button id="sync-now" type="button">Sync now</button>
           <button id="export-logs" type="button" class="secondary">Export JSONL</button>
-          <label class="file-button secondary-label"><input id="import-logs" type="file" accept="application/json,.jsonl,.ndjson,text/plain">Import JSONL</label>
-          <button id="clear-logs" type="button" class="danger">Delete all current logs</button>
+          <button id="clear-logs" type="button" class="danger">Delete all logs</button>
         </div>
-        <p class="muted compact">GitHub is the canonical copy. Normal saves append event files. Delete rewrites/removes matching data from the current branch after confirmation; older versions can still remain in Git history.</p>
         <p id="log-status" class="status" aria-live="polite"></p>
         <div class="table-wrap">
           <table>
@@ -121,9 +116,9 @@
       </section>
     </main>
 
-    <footer><p>Data is stored in a private GitHub repository. The public Pages repository contains app code only.</p></footer>
+    <footer><p>Fitness data is stored in the private GitHub repository.</p></footer>
   </div>
 
-  <script type="module" src="./app.js?v=health-delete-indicators-v4-20260814"></script>
+  <script type="module" src="./app.js?v=5"></script>
 </body>
 </html>

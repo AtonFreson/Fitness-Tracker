@@ -4,8 +4,6 @@ const AUTH_KEY = 'fitness-tracker-github-token-v3';
 const API_VERSION = '2026-03-10';
 let memoryToken = '';
 
-
-
 function savedTokenFileUrl(config = CONFIG) {
   const owner = encodeURIComponent(config.githubOwner || '');
   const repo = encodeURIComponent(config.githubRepo || '');
@@ -58,7 +56,7 @@ function setAccessToken(token, { remember = true } = {}) {
 function clearAuth() {
   memoryToken = '';
   if (!storageAvailable()) return;
-  try { localStorage.removeItem(AUTH_KEY); } catch { /* ignore */ }
+  try { localStorage.removeItem(AUTH_KEY); } catch {}
 }
 
 function hasStoredAuth() {
@@ -111,7 +109,7 @@ async function getAuthenticatedUser() {
     try {
       const body = await response.json();
       detail = body?.message ? ` ${body.message}` : '';
-    } catch { /* ignore */ }
+    } catch {}
     throw new Error(`GitHub connection check failed (${response.status}).${detail}`);
   }
   return response.json();

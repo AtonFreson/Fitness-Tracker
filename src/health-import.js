@@ -14,43 +14,28 @@ function decodeXml(value = '') {
 }
 
 function attrs(tag) {
-  const out = {};
-  for (const m of tag.matchAll(/([A-Za-z0-9_:-]+)="([^"]*)"/g)) out[m[1]] = decodeXml(m[2]);
-  return out;
+  const values = {};
+  for (const match of tag.matchAll(/([A-Za-z0-9_:-]+)="([^"]*)"/g)) values[match[1]] = decodeXml(match[2]);
+  return values;
 }
 
 function normalizeAppleDate(value) {
   if (!value) return null;
-  // Apple Health export: 2030-01-15 10:30:00 +0800
-  const m = value.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+([+-]\d{2})(\d{2})$/);
-  if (m) return `${m[1]}T${m[2]}${m[3]}:${m[4]}`;
-  return value.replace(' ', 'T');
+  const match = value.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+([+-]\d{2})(\d{2})$/);
+  return match ? `${match[1]}T${match[2]}${match[3]}:${match[4]}` : value.replace(' ', 'T');
 }
 
 function durationMinutes(value, unit) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return null;
-  const u = String(unit || '').toLowerCase();
-  if (u.startsWith('min')) return n;
-  if (u.startsWith('sec') || u === 's') return n / 60;
-  if (u.startsWith('hour') || u === 'hr' || u === 'h') return n * 60;
-  return n;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  const normalized = String(unit || '').toLowerCase();
+  if (normalized.startsWith('sec') || normalized === 's') return number / 60;
+  if (normalized.startsWith('hour') || normalized === 'hr' || normalized === 'h') return number * 60;
+  return number;
 }
 
 function round1(value) {
   return Math.round(Number(value) * 10) / 10;
-}
-
-function normalizeAppleDevice(value) {
-  if (!value) return null;
-  // Apple serializes HKDevice using NSObject's debug description, which embeds
-  // a process-local pointer such as `<<HKDevice: 0x1234abcd>, ...>`. That
-  // pointer is not device identity and can change between exports. Remove it so
-  // a fresh full export does not make an otherwise unchanged workout look new.
-  return String(value)
-    .replace(/^<<HKDevice:\s*0x[0-9a-f]+>,\s*/i, '<HKDevice ')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 async function streamTags(file, onTag) {
@@ -68,188 +53,156 @@ async function streamTags(file, onTag) {
       if (start >= 0) await onTag(chunk.slice(start));
     }
     if (done) break;
-    // Prevent unbounded growth if the file contains a huge text node (Health export normally does not).
     if (buffer.length > 2_000_000 && !buffer.includes('<')) buffer = buffer.slice(-4096);
   }
 }
 
-function workoutFromAttrs(a) {
-  const start = normalizeAppleDate(a.startDate);
-  const end = normalizeAppleDate(a.endDate);
-  const totalEnergy = Number(a.totalEnergyBurned);
+function workoutFromAttrs(values) {
+  const startAt = normalizeAppleDate(values.startDate);
+  const endAt = normalizeAppleDate(values.endDate);
+  const totalEnergy = Number(values.totalEnergyBurned);
   return {
-    workout_type_raw: a.workoutActivityType || null,
-    start_at: start,
-    end_at: end,
-    start_ms: start ? Date.parse(start) : NaN,
-    end_ms: end ? Date.parse(end) : NaN,
-    duration_minutes: durationMinutes(a.duration, a.durationUnit),
-    active_energy_kcal: Number.isFinite(totalEnergy) && /kcal/i.test(a.totalEnergyBurnedUnit || '') ? totalEnergy : null,
-    source_name: a.sourceName || null,
-    source_version: a.sourceVersion || null,
-    device: normalizeAppleDevice(a.device),
-    creation_date: normalizeAppleDate(a.creationDate),
-    metadata: {},
+    start_at: startAt,
+    end_at: endAt,
+    start_ms: Date.parse(startAt),
+    end_ms: Date.parse(endAt),
+    duration_minutes: durationMinutes(values.duration, values.durationUnit),
+    active_energy_kcal: Number.isFinite(totalEnergy) && /kcal/i.test(values.totalEnergyBurnedUnit || '') ? totalEnergy : null,
+    heart_rate_summary: null,
   };
 }
 
 async function collectStrengthWorkouts(file, onProgress) {
   const workouts = [];
   let current = null;
-  let interested = false;
 
-  await streamTags(file, async (tag) => {
+  await streamTags(file, (tag) => {
     if (tag.startsWith('<Workout ')) {
-      const a = attrs(tag);
-      interested = a.workoutActivityType === TARGET_WORKOUT;
-      current = interested ? workoutFromAttrs(a) : null;
-      if (interested && tag.endsWith('/>')) {
+      const values = attrs(tag);
+      current = values.workoutActivityType === TARGET_WORKOUT ? workoutFromAttrs(values) : null;
+      if (current && tag.endsWith('/>')) {
         workouts.push(current);
         current = null;
-        interested = false;
       }
       return;
     }
 
-    if (interested && current && tag.startsWith('<WorkoutStatistics ')) {
-      const a = attrs(tag);
-      if (a.type === ACTIVE_ENERGY && a.sum) {
-        const value = Number(a.sum);
-        if (Number.isFinite(value) && (!a.unit || /kcal/i.test(a.unit))) current.active_energy_kcal = value;
+    if (current && tag.startsWith('<WorkoutStatistics ')) {
+      const values = attrs(tag);
+      if (values.type === ACTIVE_ENERGY) {
+        const amount = Number(values.sum);
+        if (Number.isFinite(amount) && (!values.unit || /kcal/i.test(values.unit))) current.active_energy_kcal = amount;
+      } else if (values.type === HEART_RATE) {
+        const average = Number(values.average);
+        const min = Number(values.minimum);
+        const max = Number(values.maximum);
+        current.heart_rate_summary = {
+          average_bpm: Number.isFinite(average) ? average : null,
+          min_bpm: Number.isFinite(min) ? min : null,
+          max_bpm: Number.isFinite(max) ? max : null,
+        };
       }
-      if (a.type === HEART_RATE) {
-        const average = Number(a.average);
-        const min = Number(a.minimum);
-        const max = Number(a.maximum);
-        if ([average, min, max].some(Number.isFinite)) {
-          current.workout_heart_rate = {
-            average_bpm: Number.isFinite(average) ? average : null,
-            min_bpm: Number.isFinite(min) ? min : null,
-            max_bpm: Number.isFinite(max) ? max : null,
-          };
-        }
-      }
-      return;
-    }
-
-    if (interested && current && tag.startsWith('<MetadataEntry ')) {
-      const a = attrs(tag);
-      if (a.key) current.metadata[a.key] = a.value ?? null;
       return;
     }
 
     if (tag.startsWith('</Workout')) {
-      if (interested && current) workouts.push(current);
+      if (current) workouts.push(current);
       current = null;
-      interested = false;
-      if (onProgress && workouts.length % 25 === 0) onProgress(`Found ${workouts.length} strength workouts…`);
+      if (onProgress && workouts.length && workouts.length % 25 === 0) onProgress(`Found ${workouts.length} strength workouts…`);
     }
   });
 
-  workouts.sort((a, b) => a.start_ms - b.start_ms);
-  return workouts;
+  return workouts.sort((a, b) => a.start_ms - b.start_ms);
 }
 
 function findWorkoutAt(workouts, timestamp) {
-  let lo = 0;
-  let hi = workouts.length - 1;
+  let low = 0;
+  let high = workouts.length - 1;
   let best = -1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (workouts[mid].start_ms <= timestamp) {
-      best = mid;
-      lo = mid + 1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    if (workouts[middle].start_ms <= timestamp) {
+      best = middle;
+      low = middle + 1;
     } else {
-      hi = mid - 1;
+      high = middle - 1;
     }
   }
-  if (best >= 0 && timestamp <= workouts[best].end_ms + 1000) return best;
-  return -1;
-}
-
-function heartRateSampleKey(sample, sourceName = '', device = '') {
-  // Preserve measurements from distinct sources/devices, but do not duplicate an
-  // identical Apple Health Record if the export happens to contain it twice.
-  return `${sample.at}|${sample.end_at || ''}|${sample.bpm}|${sourceName}|${device}`;
+  return best >= 0 && timestamp <= workouts[best].end_ms + 1000 ? best : -1;
 }
 
 async function enrichWithRecords(file, workouts, onProgress) {
   const summaries = workouts.map(() => ({
-    hrCount: 0,
+    samples: [],
+    sampleKeys: new Set(),
     hrSum: 0,
     hrMin: Infinity,
     hrMax: -Infinity,
-    hrSamples: [],
-    hrSampleKeys: new Set(),
     energyKcal: 0,
     energyCount: 0,
-    sources: new Set(),
-    devices: new Set(),
+    energyKeys: new Set(),
   }));
-  let relevantRecords = 0;
+  let matched = 0;
 
-  await streamTags(file, async (tag) => {
+  await streamTags(file, (tag) => {
     if (!tag.startsWith('<Record ')) return;
-    const a = attrs(tag);
-    if (a.type !== HEART_RATE && a.type !== ACTIVE_ENERGY) return;
-    const start = normalizeAppleDate(a.startDate);
-    const ts = start ? Date.parse(start) : NaN;
-    if (!Number.isFinite(ts)) return;
-    const index = findWorkoutAt(workouts, ts);
-    if (index < 0) return;
-    const value = Number(a.value);
-    if (!Number.isFinite(value)) return;
-    const s = summaries[index];
-    relevantRecords += 1;
-    if (a.sourceName) s.sources.add(a.sourceName);
-    const normalizedDevice = normalizeAppleDevice(a.device);
-    if (normalizedDevice) s.devices.add(normalizedDevice);
+    const values = attrs(tag);
+    if (values.type !== HEART_RATE && values.type !== ACTIVE_ENERGY) return;
 
-    if (a.type === HEART_RATE && /count\/min|bpm/i.test(a.unit || 'count/min')) {
-      const end = normalizeAppleDate(a.endDate);
-      const sample = { at: start, bpm: value };
-      if (end && end !== start) sample.end_at = end;
-      const key = heartRateSampleKey(sample, a.sourceName, normalizedDevice);
-      if (!s.hrSampleKeys.has(key)) {
-        s.hrSampleKeys.add(key);
-        s.hrSamples.push(sample);
-        s.hrCount += 1;
-        s.hrSum += value;
-        s.hrMin = Math.min(s.hrMin, value);
-        s.hrMax = Math.max(s.hrMax, value);
-      }
-    } else if (a.type === ACTIVE_ENERGY && /kcal/i.test(a.unit || 'kcal')) {
-      s.energyCount += 1;
-      s.energyKcal += value;
+    const at = normalizeAppleDate(values.startDate);
+    const timestamp = Date.parse(at);
+    if (!Number.isFinite(timestamp)) return;
+    const index = findWorkoutAt(workouts, timestamp);
+    if (index < 0) return;
+
+    const amount = Number(values.value);
+    if (!Number.isFinite(amount)) return;
+    const summary = summaries[index];
+    matched += 1;
+
+    if (values.type === HEART_RATE && /count\/min|bpm/i.test(values.unit || 'count/min')) {
+      const endAt = normalizeAppleDate(values.endDate);
+      const sample = { at, bpm: amount };
+      if (endAt && endAt !== at) sample.end_at = endAt;
+      const key = `${sample.at}|${sample.end_at || ''}|${sample.bpm}`;
+      if (summary.sampleKeys.has(key)) return;
+      summary.sampleKeys.add(key);
+      summary.samples.push(sample);
+      summary.hrSum += amount;
+      summary.hrMin = Math.min(summary.hrMin, amount);
+      summary.hrMax = Math.max(summary.hrMax, amount);
+    } else if (values.type === ACTIVE_ENERGY && /kcal/i.test(values.unit || 'kcal')) {
+      const endAt = normalizeAppleDate(values.endDate);
+      const key = `${at}|${endAt || ''}|${amount}`;
+      if (summary.energyKeys.has(key)) return;
+      summary.energyKeys.add(key);
+      summary.energyCount += 1;
+      summary.energyKcal += amount;
     }
-    if (onProgress && relevantRecords % 5000 === 0) onProgress(`Matched ${relevantRecords.toLocaleString()} workout records…`);
+
+    if (onProgress && matched % 5000 === 0) onProgress(`Matched ${matched.toLocaleString()} workout records…`);
   });
 
-  return workouts.map((workout, i) => {
-    const s = summaries[i];
-    s.hrSamples.sort((a, b) => String(a.at).localeCompare(String(b.at)) || String(a.end_at || '').localeCompare(String(b.end_at || '')) || Number(a.bpm) - Number(b.bpm));
-    const recordHr = s.hrCount ? {
-      average_bpm: round1(s.hrSum / s.hrCount),
-      min_bpm: round1(s.hrMin),
-      max_bpm: round1(s.hrMax),
-      sample_count: s.hrCount,
-      samples: s.hrSamples,
+  return workouts.map((workout, index) => {
+    const summary = summaries[index];
+    summary.samples.sort((a, b) => a.at.localeCompare(b.at) || String(a.end_at || '').localeCompare(String(b.end_at || '')) || a.bpm - b.bpm);
+    const records = summary.samples.length ? {
+      average_bpm: round1(summary.hrSum / summary.samples.length),
+      min_bpm: round1(summary.hrMin),
+      max_bpm: round1(summary.hrMax),
     } : null;
-    const summaryHr = workout.workout_heart_rate || null;
-    const heartRate = summaryHr || recordHr ? {
-      average_bpm: summaryHr?.average_bpm ?? recordHr?.average_bpm ?? null,
-      min_bpm: summaryHr?.min_bpm ?? recordHr?.min_bpm ?? null,
-      max_bpm: summaryHr?.max_bpm ?? recordHr?.max_bpm ?? null,
-      sample_count: recordHr?.sample_count ?? 0,
-      samples: recordHr?.samples ?? [],
+    const stats = workout.heart_rate_summary;
+    const heartRate = (stats || records) ? {
+      average_bpm: stats?.average_bpm ?? records?.average_bpm ?? null,
+      min_bpm: stats?.min_bpm ?? records?.min_bpm ?? null,
+      max_bpm: stats?.max_bpm ?? records?.max_bpm ?? null,
+      samples: summary.samples,
     } : null;
 
     return {
       ...workout,
       heart_rate: heartRate,
-      active_energy_kcal: workout.active_energy_kcal ?? (s.energyCount ? round1(s.energyKcal) : null),
-      matched_record_sources: [...s.sources],
-      matched_record_devices: [...s.devices],
+      active_energy_kcal: workout.active_energy_kcal ?? (summary.energyCount ? round1(summary.energyKcal) : null),
     };
   });
 }
@@ -265,28 +218,19 @@ function toWorkoutLog(workout) {
     duration_minutes: workout.duration_minutes,
     active_energy_kcal: workout.active_energy_kcal,
     heart_rate_bpm: workout.heart_rate,
-    source: {
-      type: 'apple_health_export',
-      source_name: workout.source_name,
-      source_version: workout.source_version,
-      device: workout.device,
-      matched_record_sources: workout.matched_record_sources,
-      matched_record_devices: workout.matched_record_devices,
-    },
-    metadata: workout.metadata,
+    source: { type: 'apple_health_export' },
   };
 }
 
 async function importAppleHealthXml(file, { onProgress } = {}) {
   if (!/\.xml$/i.test(file.name || '') && !/xml/i.test(file.type || '')) {
-    throw new Error('Choose Apple Health export.xml or the original Health export ZIP.');
+    throw new Error('Choose Apple Health export.xml or an Apple Health export ZIP.');
   }
   onProgress?.('Pass 1/2: finding Traditional Strength Training workouts…');
   const workouts = await collectStrengthWorkouts(file, onProgress);
   if (!workouts.length) return [];
-  onProgress?.(`Found ${workouts.length} strength workouts. Pass 2/2: matching every heart-rate and energy record…`);
-  const enriched = await enrichWithRecords(file, workouts, onProgress);
-  return enriched.map(toWorkoutLog);
+  onProgress?.(`Found ${workouts.length} strength workouts. Pass 2/2: matching heart-rate and energy records…`);
+  return (await enrichWithRecords(file, workouts, onProgress)).map(toWorkoutLog);
 }
 
 async function importAppleHealthFile(file, { onProgress } = {}) {
@@ -295,11 +239,10 @@ async function importAppleHealthFile(file, { onProgress } = {}) {
   const isZip = name.endsWith('.zip') || type === 'application/zip' || type === 'application/x-zip-compressed';
   let xmlFile = file;
   if (isZip) {
-    onProgress?.('Opening Apple Health ZIP and locating export.xml…');
+    onProgress?.('Opening Apple Health ZIP…');
     xmlFile = await openAppleHealthExportZip(file);
-    onProgress?.(`Found ${xmlFile.name}. Reading it directly from the ZIP…`);
   }
   return importAppleHealthXml(xmlFile, { onProgress });
 }
 
-export { importAppleHealthXml, importAppleHealthFile, TARGET_WORKOUT, normalizeAppleDate, normalizeAppleDevice };
+export { importAppleHealthXml, importAppleHealthFile, TARGET_WORKOUT, normalizeAppleDate };
