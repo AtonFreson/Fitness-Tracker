@@ -446,25 +446,143 @@ function tanitaCloudResultIsStrong(parsed) {
     && tanitaBioCount(parsed) >= 3;
 }
 
+function redactDiagnosticText(value) {
+  return String(value ?? '')
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[redacted-api-key]')
+    .replace(/([?&](?:key|api_key)=)[^&\s]+/gi, '$1[redacted]')
+    .replace(/(x-goog-api-key\s*[:=]\s*)\S+/gi, '$1[redacted]')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function cloudErrorInfo(payload) {
+  const error = payload?.error || null;
+  const details = Array.isArray(error?.details) ? error.details : [];
+  const info = details.find((detail) => /ErrorInfo$/i.test(String(detail?.['@type'] || ''))) || null;
+  const legacyReasons = Array.isArray(error?.errors)
+    ? error.errors.map((item) => item?.reason).filter(Boolean)
+    : [];
+  const reasons = [...new Set([info?.reason, ...legacyReasons].filter(Boolean))];
+
+  const safeMetadata = {};
+  for (const [key, value] of Object.entries(info?.metadata || {})) {
+    if (/key|credential|token|authorization|secret/i.test(key)) continue;
+    safeMetadata[key] = redactDiagnosticText(value);
+  }
+
+  return {
+    code: error?.code ?? null,
+    status: error?.status || '',
+    message: redactDiagnosticText(error?.message || ''),
+    reasons,
+    metadata: safeMetadata,
+  };
+}
+
+function browserOrigin() {
+  try {
+    return window.location?.origin || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function browserUserAgent() {
+  try {
+    return navigator.userAgent || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function makeCloudDiagnostic({
+  configured = true,
+  attempted = false,
+  imageNames = [],
+  elapsedMs = null,
+  response = null,
+  payload = null,
+  rawResponseText = '',
+  textCandidateCount = null,
+  perImageErrors = [],
+  outcome = '',
+} = {}) {
+  const lines = [
+    '--- EXTRACTION DIAGNOSTICS ---',
+    `Cloud Vision configured: ${configured ? 'yes' : 'no'}`,
+    `Cloud Vision request attempted: ${attempted ? 'yes' : 'no'}`,
+  ];
+
+  if (attempted) {
+    lines.push(
+      'Cloud Vision endpoint: POST https://vision.googleapis.com/v1/images:annotate',
+      'Cloud Vision authentication: x-goog-api-key header (key redacted)',
+      `Page origin: ${browserOrigin()}`,
+      `Browser: ${redactDiagnosticText(browserUserAgent())}`,
+      `Batch images: ${imageNames.length}${imageNames.length ? ` (${imageNames.join(', ')})` : ''}`,
+    );
+    if (elapsedMs != null) lines.push(`Request elapsed: ${Math.round(elapsedMs)} ms`);
+    if (response) {
+      lines.push(`HTTP result: ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`);
+      const requestId = response.headers?.get?.('x-request-id') || response.headers?.get?.('x-guploader-uploadid');
+      if (requestId) lines.push(`Google request id: ${redactDiagnosticText(requestId)}`);
+    } else {
+      lines.push('HTTP result: no response (fetch/network/CORS failure before a readable response)');
+    }
+
+    const topError = cloudErrorInfo(payload);
+    if (topError.code != null) lines.push(`Google error code: ${topError.code}`);
+    if (topError.status) lines.push(`Google error status: ${topError.status}`);
+    if (topError.reasons.length) lines.push(`Google error reason: ${topError.reasons.join(', ')}`);
+    if (topError.message) lines.push(`Google error message: ${topError.message}`);
+    if (Object.keys(topError.metadata).length) {
+      lines.push(`Google error metadata: ${redactDiagnosticText(JSON.stringify(topError.metadata))}`);
+    }
+
+    if (!payload && rawResponseText) {
+      lines.push(`Non-JSON response: ${redactDiagnosticText(rawResponseText).slice(0, 800)}`);
+    }
+    if (textCandidateCount != null) lines.push(`OCR text responses: ${textCandidateCount}/${imageNames.length}`);
+    if (perImageErrors.length) {
+      lines.push(`Per-image errors: ${perImageErrors.length}`);
+      for (const item of perImageErrors) {
+        lines.push(`- ${item.name}: ${redactDiagnosticText(item.message)}`);
+      }
+    }
+  }
+
+  if (outcome) lines.push(`Cloud Vision outcome: ${redactDiagnosticText(outcome)}`);
+  lines.push('--- END EXTRACTION DIAGNOSTICS ---');
+  return lines.join('\n');
+}
+
+function cloudVisionFailure(message, diagnostic, summary = '') {
+  const error = new Error(message);
+  error.cloudVisionDiagnostic = diagnostic;
+  error.cloudVisionSummary = summary;
+  return error;
+}
+
 async function googleVisionReceipt(canvas, { onStatus, fileName = '' } = {}) {
   const apiKey = String(CONFIG.googleVisionApiKey || '').trim();
   if (!apiKey) return null;
 
   const filenameLooksTanita = /TANITA|DC[-_ ]?360/i.test(fileName);
-  const images = [{ name: 'GOOGLE VISION FULL', canvas }];
+  const images = [{ name: 'FULL', canvas }];
 
   // A full receipt plus four source-specific crops is much more reliable on
   // faint thermal printing than one monolithic OCR call. Cloud Vision batches
   // them in a single HTTP request; each crop remains an independent OCR vote.
   if (filenameLooksTanita) {
     images.push(
-      { name: 'GOOGLE VISION INPUT', canvas: cropCanvas(canvas, 0.00, 0.30) },
-      { name: 'GOOGLE VISION RESULT', canvas: cropCanvas(canvas, 0.22, 0.56) },
-      { name: 'GOOGLE VISION RANGE', canvas: cropCanvas(canvas, 0.48, 0.70) },
-      { name: 'GOOGLE VISION BIOELECTRICAL', canvas: cropCanvas(canvas, 0.80, 1.00) },
+      { name: 'INPUT', canvas: cropCanvas(canvas, 0.00, 0.30) },
+      { name: 'RESULT', canvas: cropCanvas(canvas, 0.22, 0.56) },
+      { name: 'RANGE', canvas: cropCanvas(canvas, 0.48, 0.70) },
+      { name: 'BIOELECTRICAL', canvas: cropCanvas(canvas, 0.80, 1.00) },
     );
   }
 
+  const imageNames = images.map(({ name }) => name);
   setStatus(onStatus, `Cloud OCR: Google Vision (${images.length} image${images.length === 1 ? '' : 's'})…`);
   const requests = images.map(({ canvas: imageCanvas }) => ({
     image: { content: canvasBase64Jpeg(imageCanvas) },
@@ -472,35 +590,92 @@ async function googleVisionReceipt(canvas, { onStatus, fileName = '' } = {}) {
     imageContext: { languageHints: ['en'] },
   }));
 
-  const response = await fetch('https://vision.googleapis.com/v1/images:annotate', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Goog-Api-Key': apiKey,
-    },
-    body: JSON.stringify({ requests }),
-  });
+  const startedAt = performance.now();
+  let response;
+  try {
+    response = await fetch('https://vision.googleapis.com/v1/images:annotate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+      },
+      body: JSON.stringify({ requests }),
+    });
+  } catch (cause) {
+    const elapsedMs = performance.now() - startedAt;
+    const causeMessage = redactDiagnosticText(cause?.message || cause || 'Unknown fetch error');
+    const diagnostic = makeCloudDiagnostic({
+      attempted: true,
+      imageNames,
+      elapsedMs,
+      outcome: `request failed before an HTTP response was readable: ${causeMessage}`,
+    });
+    throw cloudVisionFailure(
+      `Google Cloud Vision OCR request failed before an HTTP response was readable: ${causeMessage}`,
+      diagnostic,
+      'network/CORS error',
+    );
+  }
 
+  const elapsedMs = performance.now() - startedAt;
+  const rawResponseText = await response.text();
   let payload = null;
   try {
-    payload = await response.json();
+    payload = rawResponseText ? JSON.parse(rawResponseText) : null;
   } catch {
-    // Keep the more useful HTTP-level error below.
+    // The diagnostic section records a short redacted response excerpt.
   }
+
   if (!response.ok) {
-    const detail = payload?.error?.message || `HTTP ${response.status}`;
-    throw new Error(`Google Cloud Vision OCR failed: ${detail}`);
+    const info = cloudErrorInfo(payload);
+    const summary = `HTTP ${response.status}${info.status ? ` ${info.status}` : ''}`;
+    const diagnostic = makeCloudDiagnostic({
+      attempted: true,
+      imageNames,
+      elapsedMs,
+      response,
+      payload,
+      rawResponseText,
+      outcome: 'request rejected; local Tesseract fallback will be used',
+    });
+    const detail = info.message || `HTTP ${response.status}`;
+    throw cloudVisionFailure(`Google Cloud Vision OCR failed: ${detail}`, diagnostic, summary);
   }
 
   const responses = payload?.responses || [];
   const textCandidates = [];
+  const perImageErrors = [];
   for (let i = 0; i < images.length; i += 1) {
     const item = responses[i];
-    if (item?.error?.message) continue;
+    if (item?.error?.message) {
+      perImageErrors.push({ name: images[i].name, message: item.error.message });
+      continue;
+    }
     const text = googleVisionText(item).trim();
-    if (text) textCandidates.push({ name: images[i].name, text });
+    if (text) textCandidates.push({ name: `GOOGLE VISION ${images[i].name}`, text });
   }
-  if (!textCandidates.length) throw new Error('Google Cloud Vision returned no OCR text.');
+
+  const diagnostic = makeCloudDiagnostic({
+    attempted: true,
+    imageNames,
+    elapsedMs,
+    response,
+    payload,
+    rawResponseText,
+    textCandidateCount: textCandidates.length,
+    perImageErrors,
+    outcome: textCandidates.length
+      ? `request succeeded; ${textCandidates.length} OCR response${textCandidates.length === 1 ? '' : 's'} contained text`
+      : 'request succeeded at HTTP level but returned no usable OCR text; local fallback will be used',
+  });
+
+  if (!textCandidates.length) {
+    throw cloudVisionFailure(
+      'Google Cloud Vision returned no OCR text.',
+      diagnostic,
+      perImageErrors.length ? 'per-image OCR errors' : 'empty OCR response',
+    );
+  }
 
   const combinedText = textCandidates.map(({ name, text }) => `--- ${name} ---\n${text}`).join('\n');
   const detected = detectBodyCompositionSource(textCandidates[0].text, fileName);
@@ -516,6 +691,7 @@ async function googleVisionReceipt(canvas, { onStatus, fileName = '' } = {}) {
       method: 'google-vision:document-text-consensus',
       textCandidates,
       tanitaParses,
+      diagnostic,
     };
   }
 
@@ -533,6 +709,7 @@ async function googleVisionReceipt(canvas, { onStatus, fileName = '' } = {}) {
       method: 'google-vision:document-text',
       textCandidates,
       tanitaParses: [],
+      diagnostic,
     };
   }
 
@@ -543,6 +720,7 @@ async function googleVisionReceipt(canvas, { onStatus, fileName = '' } = {}) {
     method: 'google-vision:document-text',
     textCandidates,
     tanitaParses: [],
+    diagnostic,
   };
 }
 
@@ -661,6 +839,7 @@ async function readBodyCompositionReport(file, { onStatus } = {}) {
   const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
   setStatus(onStatus, isPdf ? 'Opening PDF…' : 'Opening image…');
   const { embeddedText, canvas } = isPdf ? await readPdf(file) : await readImage(file);
+  const cloudConfigured = Boolean(String(CONFIG.googleVisionApiKey || '').trim());
 
   const embedded = parseForSource(embeddedText, file.name);
   const embeddedCompleteEnough = embedded.source === 'accuniq'
@@ -672,20 +851,38 @@ async function readBodyCompositionReport(file, { onStatus } = {}) {
     const label = labelForSource(embedded.source);
     setStatus(onStatus, `Detected ${label}; using embedded PDF text.`);
     const parsed = embedded.source === 'tanita' ? attachTanitaIndicators(embedded.parsed, canvas) : embedded.parsed;
+    const diagnostic = makeCloudDiagnostic({
+      configured: cloudConfigured,
+      attempted: false,
+      outcome: 'not attempted because embedded PDF text was complete enough',
+    });
     return {
       source: embedded.source,
       sourceLabel: label,
       parsed,
       log: logForSource(embedded.source, parsed, file.name, 'pdf-text'),
-      rawText: embeddedText,
+      rawText: `${diagnostic}\n\n--- FINAL EXTRACTION METHOD ---\npdf-text\n\n--- EMBEDDED PDF TEXT ---\n${embeddedText}`,
       previewCanvas: canvas,
     };
   }
 
   let cloud = null;
-  if (String(CONFIG.googleVisionApiKey || '').trim()) {
+  let cloudDiagnostic = cloudConfigured
+    ? ''
+    : makeCloudDiagnostic({
+      configured: false,
+      attempted: false,
+      outcome: 'not configured; local Tesseract OCR will be used',
+    });
+
+  if (cloudConfigured) {
     try {
       cloud = await googleVisionReceipt(canvas, { onStatus, fileName: file.name });
+      cloudDiagnostic = cloud?.diagnostic || makeCloudDiagnostic({
+        configured: true,
+        attempted: true,
+        outcome: 'request completed, but no diagnostic payload was produced',
+      });
       if (cloud?.source === 'accuniq' && (cloud.parsed?.extraction?.completeness || 0) >= 0.75) {
         const label = labelForSource('accuniq');
         setStatus(onStatus, `Detected ${label} with Google Cloud Vision. Review the fields before saving.`);
@@ -694,7 +891,7 @@ async function readBodyCompositionReport(file, { onStatus } = {}) {
           sourceLabel: label,
           parsed: cloud.parsed,
           log: logForSource('accuniq', cloud.parsed, file.name, cloud.method),
-          rawText: cloud.text,
+          rawText: `${cloudDiagnostic}\n\n--- FINAL EXTRACTION METHOD ---\n${cloud.method}\n\n${cloud.text}`,
           previewCanvas: canvas,
         };
       }
@@ -707,7 +904,7 @@ async function readBodyCompositionReport(file, { onStatus } = {}) {
           sourceLabel: label,
           parsed,
           log: logForSource('tanita', parsed, file.name, cloud.method),
-          rawText: cloud.text,
+          rawText: `${cloudDiagnostic}\n\n--- FINAL EXTRACTION METHOD ---\n${cloud.method}\n\n${cloud.text}`,
           previewCanvas: canvas,
         };
       }
@@ -716,7 +913,13 @@ async function readBodyCompositionReport(file, { onStatus } = {}) {
       }
     } catch (error) {
       console.warn(error);
-      setStatus(onStatus, 'Google Cloud Vision was unavailable; falling back to local OCR…');
+      cloudDiagnostic = error?.cloudVisionDiagnostic || makeCloudDiagnostic({
+        configured: true,
+        attempted: true,
+        outcome: `request failed: ${redactDiagnosticText(error?.message || error)}`,
+      });
+      const summary = redactDiagnosticText(error?.cloudVisionSummary || 'request error');
+      setStatus(onStatus, `Google Cloud Vision failed (${summary}); falling back to local OCR…`);
       cloud = null;
     }
   }
@@ -741,7 +944,7 @@ async function readBodyCompositionReport(file, { onStatus } = {}) {
     sourceLabel: label,
     parsed,
     log: logForSource(source, parsed, file.name, method),
-    rawText: text,
+    rawText: `${cloudDiagnostic}\n\n--- FINAL EXTRACTION METHOD ---\n${method}\n\n--- OCR TEXT USED FOR PARSING ---\n${text}`,
     previewCanvas: canvas,
   };
 }
