@@ -1,5 +1,5 @@
 import { CONFIG, configProblems } from './config.js';
-import { importUploadedFile } from './src/import-router.js?v=vision-spatial-v2-20260814';
+import { importUploadedFile } from './src/import-router.js?v=tanita-indicators-v2-20260814';
 import {
   saveLog,
   saveLogs,

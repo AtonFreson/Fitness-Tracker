@@ -232,11 +232,20 @@ function analyzeTanitaIndicators(sourceCanvas) {
 
 function attachTanitaIndicators(parsed, canvas) {
   if (!parsed) return parsed;
-  const indicators = analyzeTanitaIndicators(canvas);
-  if (!indicators) return parsed;
-  parsed.indicators = indicators;
+  const indicators = analyzeTanitaIndicators(canvas) || {};
+
+  // Every DC-360 receipt has these four independent indicator bars. Keep all
+  // four review fields available even when image geometry cannot confidently
+  // recover one of them, so a missed graph can be corrected manually. The
+  // visceral-fat graph is deliberately excluded because its numeric rating is
+  // already printed directly and the graph adds no separate information.
+  const reviewIndicatorKeys = ['fat_percent', 'bmi', 'muscle_mass', 'bmr'];
+  parsed.indicators = {
+    ...(parsed.indicators || {}),
+    ...indicators,
+  };
   const fields = new Set(parsed.extraction?.review_fields || ['measured_at_local']);
-  for (const key of Object.keys(indicators)) fields.add(`indicators.${key}.reading`);
+  for (const key of reviewIndicatorKeys) fields.add(`indicators.${key}.reading`);
   const warnings = [...(parsed.extraction?.warnings || [])];
 
   const fat = parsed.metrics?.fat_percent;
