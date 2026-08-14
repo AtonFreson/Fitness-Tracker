@@ -2,8 +2,8 @@ import { CONFIG, configProblems } from '../config.js';
 import { githubFetch } from './github-auth.js';
 
 const EVENT_SCHEMA_VERSION = 1;
-const MAX_LOGS_PER_EVENT = 500;
-const MAX_IDS_PER_DELETE_EVENT = 1000;
+const MAX_LOGS_PER_EVENT = 50;
+const MAX_EVENT_BYTES = 750_000;
 
 function requireConfigured() {
   const problems = configProblems();
@@ -74,6 +74,38 @@ function mergeLogs(existing, incoming) {
   for (const log of existing || []) if (log?.id) map.set(log.id, log);
   for (const log of incoming || []) if (log?.id) map.set(log.id, log);
   return sortLogs([...map.values()]);
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function changedLogs(existing, incoming) {
+  const existingById = new Map((existing || []).filter((log) => log?.id).map((log) => [log.id, stableJson(log)]));
+  // A full Apple Health export can contain the same deterministic workout IDs
+  // every time it is exported. Collapse duplicate incoming IDs and only write
+  // records whose materialized content is genuinely new or changed.
+  const incomingById = new Map();
+  for (const log of incoming || []) if (log?.id && log?.kind) incomingById.set(log.id, log);
+  return [...incomingById.values()].filter((log) => existingById.get(log.id) !== stableJson(log));
+}
+
+function removeIdsFromEvent(event, ids) {
+  const wanted = ids instanceof Set ? ids : new Set(ids || []);
+  if (!event || !wanted.size) return { changed: false, empty: false, event };
+  if (event.event_type === 'upsert_logs') {
+    const logs = (event.logs || []).filter((log) => !wanted.has(log?.id));
+    return { changed: logs.length !== (event.logs || []).length, empty: logs.length === 0, event: { ...event, logs } };
+  }
+  if (event.event_type === 'delete_logs') {
+    const remainingIds = (event.ids || []).filter((id) => !wanted.has(id));
+    return { changed: remainingIds.length !== (event.ids || []).length, empty: remainingIds.length === 0, event: { ...event, ids: remainingIds } };
+  }
+  return { changed: false, empty: false, event };
 }
 
 // Kept for legacy-v4 compatibility and tests. New writes use immutable event files.
@@ -224,6 +256,41 @@ async function writeNewRepoFile(path, text, message) {
   return response.json();
 }
 
+
+async function updateRepoFile(path, text, sha, message) {
+  const response = await githubFetch(contentsPath(path), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message,
+      content: utf8ToBase64(text),
+      sha,
+      branch: CONFIG.githubBranch,
+    }),
+  });
+  if (!response.ok) {
+    let detail = '';
+    try { detail = (await response.json())?.message || ''; } catch {}
+    throw new Error(`GitHub could not update ${path} (${response.status})${detail ? `: ${detail}` : ''}.`);
+  }
+  return response.json();
+}
+
+async function deleteRepoFile(path, sha, message) {
+  const response = await githubFetch(contentsPath(path), {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, sha, branch: CONFIG.githubBranch }),
+  });
+  if (response.status === 404) return false;
+  if (!response.ok) {
+    let detail = '';
+    try { detail = (await response.json())?.message || ''; } catch {}
+    throw new Error(`GitHub could not delete ${path} (${response.status})${detail ? `: ${detail}` : ''}.`);
+  }
+  return true;
+}
+
 async function appendEvent(event, message) {
   validateEvent(event);
   const text = `${JSON.stringify(event, null, 2)}\n`;
@@ -264,18 +331,23 @@ async function readEvents() {
     let event;
     try { event = JSON.parse(file.text); }
     catch (error) { throw new Error(`${path} is invalid JSON: ${error.message}`); }
-    events.push({ path, event: validateEvent(event, path) });
+    events.push({ path, sha: file.sha, event: validateEvent(event, path) });
   }
   return events;
 }
 
-async function readLegacyLogs() {
+async function legacyDataPaths() {
   const root = dataRoot();
   const paths = [`${root}/body-composition.jsonl`, `${root}/other.jsonl`];
   const workouts = await listRepoDirectory(`${root}/workouts`);
   for (const item of workouts) {
     if (item?.type === 'file' && /\.jsonl$/i.test(item.name || '')) paths.push(`${root}/workouts/${item.name}`);
   }
+  return paths;
+}
+
+async function readLegacyLogs() {
+  const paths = await legacyDataPaths();
   const all = [];
   for (const path of paths) {
     const file = await readRepoFile(path);
@@ -295,20 +367,23 @@ function chunks(values, size) {
   return out;
 }
 
-async function saveLogs(logs) {
-  await assertPrivateRepo();
-  const valid = (logs || []).filter((log) => log?.id && log?.kind);
-  if (!valid.length) return 0;
-  const batches = chunks(valid, MAX_LOGS_PER_EVENT);
-  for (const batch of batches) {
-    const event = createUpsertEvent(batch);
-    await appendEvent(event, `Add fitness progress logs (${batch.length} record${batch.length === 1 ? '' : 's'})`);
+function logBatches(values) {
+  const batches = [];
+  let current = [];
+  let currentBytes = 0;
+  const encoder = new TextEncoder();
+  for (const value of values || []) {
+    const bytes = encoder.encode(JSON.stringify(value)).length + 2;
+    if (current.length && (current.length >= MAX_LOGS_PER_EVENT || currentBytes + bytes > MAX_EVENT_BYTES)) {
+      batches.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(value);
+    currentBytes += bytes;
   }
-  return valid.length;
-}
-
-async function saveLog(log) {
-  return saveLogs([log]);
+  if (current.length) batches.push(current);
+  return batches;
 }
 
 async function getAllLogs() {
@@ -317,21 +392,86 @@ async function getAllLogs() {
   return applyEvents(legacy, events);
 }
 
-async function deleteLog(id) {
+async function saveLogs(logs) {
+  const valid = (logs || []).filter((log) => log?.id && log?.kind);
+  if (!valid.length) return 0;
+  const existing = await getAllLogs();
+  const changed = changedLogs(existing, valid);
+  if (!changed.length) return 0;
+  for (const batch of logBatches(changed)) {
+    const event = createUpsertEvent(batch);
+    await appendEvent(event, `Add/update fitness progress logs (${batch.length} record${batch.length === 1 ? '' : 's'})`);
+  }
+  return changed.length;
+}
+
+async function saveLog(log) {
+  return saveLogs([log]);
+}
+
+function filterLegacyJsonl(text, ids) {
+  const wanted = ids instanceof Set ? ids : new Set(ids || []);
+  let removed = 0;
+  const kept = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const value = JSON.parse(line);
+      if (value?.id && wanted.has(value.id)) {
+        removed += 1;
+        continue;
+      }
+    } catch {
+      // Do not destroy an unrelated malformed legacy line while deleting a log.
+    }
+    kept.push(line);
+  }
+  return { removed, text: kept.length ? `${kept.join('\n')}\n` : '' };
+}
+
+async function purgeLogs(ids) {
+  const wanted = new Set((ids || []).filter(Boolean));
+  if (!wanted.size) return 0;
   await assertPrivateRepo();
+
+  const events = await readEvents();
+  let touched = 0;
+  for (const item of events) {
+    const result = removeIdsFromEvent(item.event, wanted);
+    if (!result.changed) continue;
+    touched += 1;
+    if (result.empty) {
+      await deleteRepoFile(item.path, item.sha, `Permanently delete fitness log data (${wanted.size} requested id${wanted.size === 1 ? '' : 's'})`);
+    } else {
+      await updateRepoFile(item.path, `${JSON.stringify(result.event, null, 2)}\n`, item.sha, `Remove fitness log data (${wanted.size} requested id${wanted.size === 1 ? '' : 's'})`);
+    }
+  }
+
+  for (const path of await legacyDataPaths()) {
+    const file = await readRepoFile(path);
+    if (!file.exists || !file.text.trim()) continue;
+    const filtered = filterLegacyJsonl(file.text, wanted);
+    if (!filtered.removed) continue;
+    touched += 1;
+    if (!filtered.text) {
+      await deleteRepoFile(path, file.sha, `Permanently delete legacy fitness log data (${wanted.size} requested id${wanted.size === 1 ? '' : 's'})`);
+    } else {
+      await updateRepoFile(path, filtered.text, file.sha, `Remove legacy fitness log data (${wanted.size} requested id${wanted.size === 1 ? '' : 's'})`);
+    }
+  }
+  return touched;
+}
+
+async function deleteLog(id) {
   if (!id) return false;
-  const event = createDeleteEvent([id]);
-  await appendEvent(event, 'Hide fitness progress log');
+  await purgeLogs([id]);
   return true;
 }
 
 async function clearLogs() {
   const logs = await getAllLogs();
   if (!logs.length) return 0;
-  for (const idBatch of chunks(logs.map((log) => log.id), MAX_IDS_PER_DELETE_EVENT)) {
-    const event = createDeleteEvent(idBatch);
-    await appendEvent(event, `Hide fitness progress logs (${idBatch.length} records)`);
-  }
+  await purgeLogs(logs.map((log) => log.id));
   return logs.length;
 }
 
@@ -350,6 +490,8 @@ export {
   parseJsonl,
   sortLogs,
   mergeLogs,
+  changedLogs,
+  removeIdsFromEvent,
   dataPathForLog,
   eventPathForTimestamp,
   createUpsertEvent,

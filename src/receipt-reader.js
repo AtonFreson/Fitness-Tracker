@@ -4,7 +4,7 @@ import { parseTanitaText, toBodyCompositionLog, mergeTanitaParses } from './tani
 import { parseAccuniqText, toAccuniqBodyCompositionLog } from './accuniq-parser.js';
 import { detectBodyCompositionSource, labelForSource } from './source-detection.js';
 
-const EXTRACTOR_BUILD = 'vision-spatial-v2-20260814';
+const EXTRACTOR_BUILD = 'vision-spatial-indicator-anchors-v4-20260814';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.2.108/build/pdf.worker.min.mjs';
 
@@ -114,7 +114,66 @@ function indicatorBand(name, position) {
  * heading, the five bar slots occur at consistent vertical spacing. Visceral fat
  * is intentionally skipped because its numeric rating already captures the same information.
  */
-function analyzeTanitaIndicators(sourceCanvas) {
+function scanIndicatorBar({ gray, stretched, width, height, scanTop, scanBottom, barLeft, barRight }) {
+  const barWidth = barRight - barLeft;
+  const positions = [];
+  const top = Math.max(0, Math.floor(scanTop));
+  const bottom = Math.min(height, Math.ceil(scanBottom));
+
+  for (let y = top; y < bottom; y += 1) {
+    // Nine-pixel moving density smooths thermal-printer grain while keeping
+    // the filled/unfilled edge sharp enough to measure.
+    const darkRow = new Uint8Array(barWidth);
+    for (let localX = 0; localX < barWidth; localX += 1) {
+      const x = barLeft + localX;
+      darkRow[localX] = stretched(gray[y * width + x]) < 145 ? 1 : 0;
+    }
+    const active = new Uint8Array(barWidth);
+    const prefix = new Uint16Array(barWidth + 1);
+    for (let x = 0; x < barWidth; x += 1) prefix[x + 1] = prefix[x] + darkRow[x];
+    const radius = 4;
+    for (let x = 0; x < barWidth; x += 1) {
+      const windowStart = Math.max(0, x - radius);
+      const windowEnd = Math.min(barWidth - 1, x + radius);
+      const windowSum = prefix[windowEnd + 1] - prefix[windowStart];
+      active[x] = windowSum / (windowEnd - windowStart + 1) > 0.52 ? 1 : 0;
+    }
+
+    const runs = [];
+    let runStart = null;
+    for (let x = 0; x < barWidth; x += 1) {
+      if (active[x] && runStart == null) runStart = x;
+      if (runStart != null && (!active[x] || x === barWidth - 1)) {
+        const runEnd = active[x] && x === barWidth - 1 ? x : x - 1;
+        if (runEnd - runStart + 1 >= 5) runs.push([runStart, runEnd]);
+        runStart = null;
+      }
+    }
+
+    const leftRuns = runs.filter(([runX]) => runX < width * 0.12);
+    if (!leftRuns.length) continue;
+    let [fillStart, fillEnd] = leftRuns.sort((a, b) => a[0] - b[0])[0];
+    for (const [nextStart, nextEnd] of runs) {
+      if (nextStart > fillEnd && nextStart - fillEnd <= 12) fillEnd = nextEnd;
+    }
+    const position = fillEnd / barWidth;
+    if (fillStart < width * 0.12 && position > 0.05 && position < 0.98) positions.push(position);
+  }
+
+  return dominantCluster(positions);
+}
+
+/**
+ * Convert TANITA's printed indicator bars into category + within-category position data.
+ *
+ * Google Vision is used only to locate the *labels* when its word geometry is
+ * available. The value itself still comes from the pixels in the printed bar.
+ * This matters for BMR/muscle bars: small changes in scan crop or vertical
+ * stretch can move the bar enough that a fixed DC-360 offset misses it even
+ * though the bar is visually clear. A wider layout-only fallback remains for
+ * offline/local OCR imports.
+ */
+function analyzeTanitaIndicators(sourceCanvas, labelAnchors = null) {
   if (!sourceCanvas?.width || !sourceCanvas?.height) return null;
   const canvas = resizeCanvas(sourceCanvas, 720);
   const { width, height } = canvas;
@@ -133,8 +192,7 @@ function analyzeTanitaIndicators(sourceCanvas) {
   const high = Math.max(low + 10, percentileFromHistogram(histogram, gray.length, 0.985));
   const stretched = (value) => Math.max(0, Math.min(255, ((value - low) * 255) / (high - low)));
 
-  // Locate the dark INDICATOR title band. Search low enough to skip RESULT and
-  // DESIRABLE RANGE, but high enough not to mistake a later bar for the title.
+  // Locate the dark INDICATOR title band for the local/layout-only fallback.
   const x0 = Math.floor(width * 0.03);
   const x1 = Math.ceil(width * 0.97);
   const y0 = Math.floor(height * 0.48);
@@ -158,8 +216,7 @@ function analyzeTanitaIndicators(sourceCanvas) {
       start = null;
     }
   }
-  if (!bands.length) return null;
-  const indicatorHeaderBottom = bands.at(-1)[1];
+  const indicatorHeaderBottom = bands.length ? bands.at(-1)[1] : null;
 
   // Keep the visceral-fat slot in the layout index so the later bars line up,
   // but do not store it: the numeric visceral-fat rating is more precise.
@@ -167,72 +224,84 @@ function analyzeTanitaIndicators(sourceCanvas) {
   const output = {};
   const barLeft = Math.floor(width * 0.025);
   const barRight = Math.ceil(width * 0.965);
-  const barWidth = barRight - barLeft;
 
   for (let index = 0; index < names.length; index += 1) {
-    const nominalTop = indicatorHeaderBottom + (0.062 + 0.225 * index) * width;
-    const scanTop = Math.floor(nominalTop + 0.010 * width);
-    const scanBottom = Math.min(height, Math.ceil(nominalTop + 0.045 * width));
-    const positions = [];
+    const name = names[index];
+    if (!name) continue;
+    const candidates = [];
+    const anchor = labelAnchors?.[name];
 
-    for (let y = scanTop; y < scanBottom; y += 1) {
-      // Nine-pixel moving density smooths thermal-printer grain while keeping
-      // the filled/unfilled edge sharp enough to measure.
-      const darkRow = new Uint8Array(barWidth);
-      for (let localX = 0; localX < barWidth; localX += 1) {
-        const x = barLeft + localX;
-        darkRow[localX] = stretched(gray[y * width + x]) < 145 ? 1 : 0;
+    if (anchor?.bottom_ratio != null) {
+      const labelBottom = anchor.bottom_ratio * height;
+      const nextTop = anchor.next_top_ratio != null ? anchor.next_top_ratio * height : null;
+      // The bar is immediately below the label. Limit the search to the upper
+      // part of the label-to-next-label gap so scale text beneath the bar does
+      // not become a competing dark run.
+      let scanBottom = labelBottom + 0.070 * width;
+      if (nextTop != null && nextTop > labelBottom) {
+        scanBottom = Math.min(scanBottom, labelBottom + (nextTop - labelBottom) * 0.38);
       }
-      const active = new Uint8Array(barWidth);
-      const prefix = new Uint16Array(barWidth + 1);
-      for (let x = 0; x < barWidth; x += 1) prefix[x + 1] = prefix[x] + darkRow[x];
-      const radius = 4;
-      for (let x = 0; x < barWidth; x += 1) {
-        const windowStart = Math.max(0, x - radius);
-        const windowEnd = Math.min(barWidth - 1, x + radius);
-        const windowSum = prefix[windowEnd + 1] - prefix[windowStart];
-        active[x] = windowSum / (windowEnd - windowStart + 1) > 0.52 ? 1 : 0;
-      }
-
-      const runs = [];
-      let runStart = null;
-      for (let x = 0; x < barWidth; x += 1) {
-        if (active[x] && runStart == null) runStart = x;
-        if (runStart != null && (!active[x] || x === barWidth - 1)) {
-          const runEnd = active[x] && x === barWidth - 1 ? x : x - 1;
-          if (runEnd - runStart + 1 >= 5) runs.push([runStart, runEnd]);
-          runStart = null;
-        }
-      }
-
-      const leftRuns = runs.filter(([runX]) => runX < width * 0.12);
-      if (!leftRuns.length) continue;
-      let [fillStart, fillEnd] = leftRuns.sort((a, b) => a[0] - b[0])[0];
-      for (const [nextStart, nextEnd] of runs) {
-        if (nextStart > fillEnd && nextStart - fillEnd <= 12) fillEnd = nextEnd;
-      }
-      const position = fillEnd / barWidth;
-      if (fillStart < width * 0.12 && position > 0.05 && position < 0.98) positions.push(position);
+      const cluster = scanIndicatorBar({
+        gray,
+        stretched,
+        width,
+        height,
+        scanTop: labelBottom + 0.002 * width,
+        scanBottom,
+        barLeft,
+        barRight,
+      });
+      if (cluster) candidates.push({ cluster, locator: 'google_vision_label' });
     }
 
-    const cluster = dominantCluster(positions);
-    if (!cluster || !names[index]) continue;
+    if (indicatorHeaderBottom != null) {
+      const nominalTop = indicatorHeaderBottom + (0.062 + 0.225 * index) * width;
+      // The previous window started below nominalTop and could miss an otherwise
+      // obvious BMR fill by a few pixels. Search on both sides of the expected
+      // position and let repeated scan rows vote for the fill edge.
+      const cluster = scanIndicatorBar({
+        gray,
+        stretched,
+        width,
+        height,
+        scanTop: nominalTop - 0.018 * width,
+        scanBottom: nominalTop + 0.055 * width,
+        barLeft,
+        barRight,
+      });
+      if (cluster) candidates.push({ cluster, locator: 'layout_fallback' });
+    }
+
+    if (!candidates.length) continue;
+    // Prefer the OCR-label anchored window when it yields a stable cluster;
+    // otherwise choose the candidate with the most repeated supporting rows.
+    candidates.sort((a, b) => {
+      if (a.locator !== b.locator) {
+        if (a.locator === 'google_vision_label' && a.cluster.clusterSize >= 3) return -1;
+        if (b.locator === 'google_vision_label' && b.cluster.clusterSize >= 3) return 1;
+      }
+      const aq = a.cluster.clusterSize / a.cluster.sampleSize;
+      const bq = b.cluster.clusterSize / b.cluster.sampleSize;
+      return (b.cluster.clusterSize + bq * 4) - (a.cluster.clusterSize + aq * 4);
+    });
+    const { cluster, locator } = candidates[0];
     const clusterFraction = cluster.clusterSize / cluster.sampleSize;
     const confidence = Math.min(0.99, 0.45 + 0.42 * clusterFraction + 0.02 * Math.min(cluster.clusterSize, 6));
-    const band = indicatorBand(names[index], cluster.position);
-    output[names[index]] = {
+    const band = indicatorBand(name, cluster.position);
+    output[name] = {
       ...band,
       position: Math.round(cluster.position * 1000) / 1000,
       confidence: Math.round(confidence * 100) / 100,
       source: 'indicator_graph',
+      locator,
     };
   }
   return Object.keys(output).length ? output : null;
 }
 
-function attachTanitaIndicators(parsed, canvas) {
+function attachTanitaIndicators(parsed, canvas, labelAnchors = null) {
   if (!parsed) return parsed;
-  const indicators = analyzeTanitaIndicators(canvas) || {};
+  const indicators = analyzeTanitaIndicators(canvas, labelAnchors) || {};
 
   // Every DC-360 receipt has these four independent indicator bars. Keep all
   // four review fields available even when image geometry cannot confidently
@@ -259,13 +328,26 @@ function attachTanitaIndicators(parsed, canvas) {
     }
   }
 
-
   parsed.extraction = {
     ...parsed.extraction,
     warnings: [...new Set(warnings)],
     review_fields: [...fields],
   };
   return parsed;
+}
+
+function tanitaIndicatorDiagnosticLines(parsed) {
+  const labels = [
+    ['fat_percent', 'Fat %'],
+    ['bmi', 'BMI'],
+    ['muscle_mass', 'Muscle mass'],
+    ['bmr', 'BMR'],
+  ];
+  return labels.map(([key, label]) => {
+    const indicator = parsed?.indicators?.[key];
+    if (!indicator?.reading) return `Indicator ${label}: not detected`;
+    return `Indicator ${label}: ${indicator.reading}; position=${indicator.position ?? 'n/a'}; confidence=${indicator.confidence ?? 'n/a'}; locator=${indicator.locator || 'unknown'}`;
+  });
 }
 
 async function readImage(file) {
@@ -557,11 +639,64 @@ function googleVisionSpatialResult(response) {
   }
 
   lines.sort((a, b) => a.centerY - b.centerY || Math.min(...a.words.map((word) => word.left)) - Math.min(...b.words.map((word) => word.left)));
-  const text = lines
-    .map((line) => line.words.sort((a, b) => a.left - b.left).map((word) => word.text).join(' '))
-    .filter(Boolean)
-    .join('\n');
-  return { text, wordCount: words.length, rowCount: lines.length };
+  const visualLines = lines.map((line) => {
+    line.words.sort((a, b) => a.left - b.left);
+    return {
+      text: line.words.map((word) => word.text).join(' '),
+      top: line.top,
+      bottom: line.bottom,
+      centerY: line.centerY,
+      left: Math.min(...line.words.map((word) => word.left)),
+      right: Math.max(...line.words.map((word) => word.right)),
+    };
+  }).filter((line) => line.text);
+  const text = visualLines.map((line) => line.text).join('\n');
+  return { text, wordCount: words.length, rowCount: visualLines.length, lines: visualLines };
+}
+
+function tanitaIndicatorAnchorsFromVision(response, imageHeight) {
+  const spatial = googleVisionSpatialResult(response);
+  const lines = spatial.lines || [];
+  const height = Math.max(1, Number(imageHeight) || Number(response?.fullTextAnnotation?.pages?.[0]?.height) || 1);
+  const indicatorIndex = lines.findIndex((line) => /\bINDICATOR\b/i.test(line.text));
+  if (indicatorIndex < 0) return null;
+
+  const labelSpecs = [
+    ['fat_percent', /(?:^|\s)FAT\s*%/i],
+    ['bmi', /(?:^|\s)BMI(?:\s|$)/i],
+    ['visceral_fat', /VISCERAL\s+FAT\s+RATING/i],
+    ['muscle_mass', /MUSCLE\s+MASS/i],
+    ['bmr', /(?:^|\s)BMR(?:\s|$)/i],
+    ['physique', /PHYSIQUE\s+RATING/i],
+  ];
+  const found = [];
+  let cursor = indicatorIndex + 1;
+  for (const [name, pattern] of labelSpecs) {
+    let matchIndex = -1;
+    for (let i = cursor; i < lines.length; i += 1) {
+      if (pattern.test(lines[i].text)) {
+        matchIndex = i;
+        break;
+      }
+      if (name !== 'physique' && /PHYSIQUE\s+RATING/i.test(lines[i].text)) break;
+    }
+    if (matchIndex < 0) continue;
+    found.push({ name, ...lines[matchIndex] });
+    cursor = matchIndex + 1;
+  }
+
+  const anchors = {};
+  for (let i = 0; i < found.length; i += 1) {
+    const current = found[i];
+    if (!['fat_percent', 'bmi', 'muscle_mass', 'bmr'].includes(current.name)) continue;
+    const next = found[i + 1] || null;
+    anchors[current.name] = {
+      bottom_ratio: Math.max(0, Math.min(1, current.bottom / height)),
+      next_top_ratio: next ? Math.max(0, Math.min(1, next.top / height)) : null,
+      label: current.text,
+    };
+  }
+  return Object.keys(anchors).length ? anchors : null;
 }
 
 function insertDiagnosticDetails(diagnostic, details = []) {
@@ -798,6 +933,7 @@ async function googleVisionReceipt(canvas, { onStatus, fileName = '' } = {}) {
   const perImageErrors = [];
   let spatialResponseCount = 0;
   let ocrTextResponseCount = 0;
+  let indicatorLabelAnchors = null;
   const spatialDetails = [];
   for (let i = 0; i < images.length; i += 1) {
     const item = responses[i];
@@ -809,6 +945,9 @@ async function googleVisionReceipt(canvas, { onStatus, fileName = '' } = {}) {
     const naturalText = googleVisionText(item).trim();
     const spatialResult = googleVisionSpatialResult(item);
     const spatialText = spatialResult.text.trim();
+    if (i === 0 && filenameLooksTanita) {
+      indicatorLabelAnchors = tanitaIndicatorAnchorsFromVision(item, images[i].canvas.height);
+    }
     spatialDetails.push(`${images[i].name} spatial geometry: ${spatialResult.wordCount} words -> ${spatialResult.rowCount} visual rows`);
     if (naturalText || spatialText) ocrTextResponseCount += 1;
 
@@ -851,6 +990,9 @@ async function googleVisionReceipt(canvas, { onStatus, fileName = '' } = {}) {
       ? 'Parser input: Cloud Vision word geometry reconstructed into visual rows'
       : 'Parser input: native Cloud Vision reading order (no word geometry returned)',
     ...spatialDetails,
+    filenameLooksTanita
+      ? `Indicator label anchors: ${Object.keys(indicatorLabelAnchors || {}).join(', ') || 'none (layout fallback will be used)'}`
+      : '',
   ]);
 
   if (!textCandidates.length) {
@@ -890,6 +1032,7 @@ async function googleVisionReceipt(canvas, { onStatus, fileName = '' } = {}) {
       method: 'google-vision:spatial-document-consensus',
       textCandidates,
       tanitaParses,
+      indicatorLabelAnchors,
       diagnostic,
     };
   }
@@ -1050,11 +1193,12 @@ async function readBodyCompositionReport(file, { onStatus } = {}) {
     const label = labelForSource(embedded.source);
     setStatus(onStatus, `Detected ${label}; using embedded PDF text.`);
     const parsed = embedded.source === 'tanita' ? attachTanitaIndicators(embedded.parsed, canvas) : embedded.parsed;
-    const diagnostic = makeCloudDiagnostic({
+    let diagnostic = makeCloudDiagnostic({
       configured: cloudConfigured,
       attempted: false,
       outcome: 'not attempted because embedded PDF text was complete enough',
     });
+    if (embedded.source === 'tanita') diagnostic = insertDiagnosticDetails(diagnostic, tanitaIndicatorDiagnosticLines(parsed));
     return {
       source: embedded.source,
       sourceLabel: label,
@@ -1090,12 +1234,13 @@ async function readBodyCompositionReport(file, { onStatus } = {}) {
           sourceLabel: label,
           parsed: cloud.parsed,
           log: logForSource('accuniq', cloud.parsed, file.name, cloud.method),
-          rawText: `${cloudDiagnostic}\n\n--- FINAL EXTRACTION METHOD ---\n${cloud.method}\n\n${cloud.text}`,
+          rawText: `${finalDiagnostic}\n\n--- FINAL EXTRACTION METHOD ---\n${cloud.method}\n\n${cloud.text}`,
           previewCanvas: canvas,
         };
       }
       if (cloud?.source === 'tanita' && tanitaCloudResultIsStrong(cloud.parsed)) {
-        const parsed = attachTanitaIndicators(cloud.parsed, canvas);
+        const parsed = attachTanitaIndicators(cloud.parsed, canvas, cloud.indicatorLabelAnchors);
+        const finalDiagnostic = insertDiagnosticDetails(cloudDiagnostic, tanitaIndicatorDiagnosticLines(parsed));
         const label = labelForSource('tanita');
         setStatus(onStatus, `Detected ${label} with Google Cloud Vision. Review the fields before saving.`);
         return {
@@ -1135,7 +1280,10 @@ async function readBodyCompositionReport(file, { onStatus } = {}) {
     throw new Error('Could not recognize this body-composition report. Supported sources are TANITA DC-360 and ACCUNIQ.');
   }
   let parsed = parsedResult.parsed || parseForSource(text, file.name).parsed;
-  if (source === 'tanita') parsed = attachTanitaIndicators(parsed, canvas);
+  if (source === 'tanita') {
+    parsed = attachTanitaIndicators(parsed, canvas, cloud?.indicatorLabelAnchors);
+    cloudDiagnostic = insertDiagnosticDetails(cloudDiagnostic, tanitaIndicatorDiagnosticLines(parsed));
+  }
   const label = labelForSource(source);
   setStatus(onStatus, `Detected ${label}. Review the fields before saving.`);
   return {

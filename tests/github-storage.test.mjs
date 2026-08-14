@@ -9,6 +9,8 @@ import {
   createDeleteEvent,
   applyEvents,
   eventPathForTimestamp,
+  changedLogs,
+  removeIdsFromEvent,
 } from '../src/storage.js';
 
 test('mergeLogs upserts by deterministic id', () => {
@@ -56,4 +58,34 @@ test('a later upsert restores a previously hidden record', () => {
 test('event files are partitioned by year and carry sortable timestamps', () => {
   const path = eventPathForTimestamp('2031-04-05T12:34:56.789Z', 'abc');
   assert.equal(path, 'data/events/2031/20310405T123456789Z_abc.json');
+});
+
+
+test('save dedupe helper skips identical deterministic IDs but keeps richer updates', () => {
+  const old = {
+    id: 'apple-health:strength:2030-01-01T10:00:00+08:00',
+    kind: 'workout',
+    start_at: '2030-01-01T10:00:00+08:00',
+    heart_rate_bpm: { average_bpm: 100, samples: [] },
+  };
+  assert.deepEqual(changedLogs([old], [{ ...old }]), []);
+  const richer = { ...old, heart_rate_bpm: { average_bpm: 100, sample_count: 1, samples: [{ at: old.start_at, bpm: 100 }] } };
+  assert.deepEqual(changedLogs([old], [richer]).map((log) => log.id), [old.id]);
+});
+
+test('destructive delete helper removes a log from batched upsert files without tombstoning peers', () => {
+  const x = { id: 'x', kind: 'workout', start_at: '2030-01-01' };
+  const y = { id: 'y', kind: 'workout', start_at: '2030-01-02' };
+  const event = createUpsertEvent([x, y], '2030-01-03T00:00:00.000Z');
+  const result = removeIdsFromEvent(event, new Set(['x']));
+  assert.equal(result.changed, true);
+  assert.equal(result.empty, false);
+  assert.deepEqual(result.event.logs.map((log) => log.id), ['y']);
+});
+
+test('destructive delete helper marks an emptied event file for deletion', () => {
+  const event = createUpsertEvent([{ id: 'x', kind: 'workout', start_at: '2030-01-01' }], '2030-01-03T00:00:00.000Z');
+  const result = removeIdsFromEvent(event, ['x']);
+  assert.equal(result.changed, true);
+  assert.equal(result.empty, true);
 });

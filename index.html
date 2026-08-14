@@ -57,7 +57,7 @@
 
     <main>
       <section class="notice secure-notice">
-        <strong id="repo-visibility">Private repository</strong> · <code id="repo-name"></code>. GitHub is the canonical store. New imports and hide actions are written as immutable event files, so the app does not overwrite or delete earlier import files.
+        <strong id="repo-visibility">Private repository</strong> · <code id="repo-name"></code>. GitHub is the canonical store. Saves create event files; explicit Delete actions remove matching log data from the current repository after confirmation. Git history may still retain older versions.
       </section>
 
       <section class="card" id="import-card">
@@ -94,9 +94,9 @@
       </section>
 
       <section class="card info-grid">
-        <div><p class="eyebrow">TANITA DC-360</p><h3>Scanned receipt</h3><p>Uses PDF text when available; otherwise renders the scan, runs OCR, enhances contrast, and retries known receipt sections.</p></div>
+        <div><p class="eyebrow">TANITA DC-360</p><h3>Scanned receipt</h3><p>Uses Google Vision spatial OCR when configured, falls back to local OCR, and reads the printed indicator bars from image geometry anchored to their labels.</p></div>
         <div><p class="eyebrow">ACCUNIQ</p><h3>Body-composition report</h3><p>Reads ACCUNIQ Manager report text and keeps ACCUNIQ measurements as a distinct source series.</p></div>
-        <div><p class="eyebrow">Apple Health</p><h3>Upload the ZIP directly</h3><p>The importer locates <code>export.xml</code> inside the Apple Health archive, so you do not need to unzip it on your iPhone first.</p></div>
+        <div><p class="eyebrow">Apple Health</p><h3>Upload the ZIP directly</h3><p>The importer locates <code>export.xml</code>, stores the individual heart-rate readings for strength workouts, and skips unchanged workout IDs when the full export is imported again.</p></div>
       </section>
 
       <section class="card" id="logs-card">
@@ -108,9 +108,9 @@
           <button id="sync-now" type="button">Sync now</button>
           <button id="export-logs" type="button" class="secondary">Export JSONL</button>
           <label class="file-button secondary-label"><input id="import-logs" type="file" accept="application/json,.jsonl,.ndjson,text/plain">Import JSONL</label>
-          <button id="clear-logs" type="button" class="danger">Hide all current logs</button>
+          <button id="clear-logs" type="button" class="danger">Delete all current logs</button>
         </div>
-        <p class="muted compact">GitHub is the canonical copy. Each save appends a new event file and a Git commit. Hiding a log adds a tombstone event instead of deleting its original data.</p>
+        <p class="muted compact">GitHub is the canonical copy. Normal saves append event files. Delete rewrites/removes matching data from the current branch after confirmation; older versions can still remain in Git history.</p>
         <p id="log-status" class="status" aria-live="polite"></p>
         <div class="table-wrap">
           <table>
@@ -124,6 +124,6 @@
     <footer><p>Data is stored in a private GitHub repository. The public Pages repository contains app code only.</p></footer>
   </div>
 
-  <script type="module" src="./app.js?v=tanita-indicators-v2-20260814"></script>
+  <script type="module" src="./app.js?v=health-delete-indicators-v4-20260814"></script>
 </body>
 </html>

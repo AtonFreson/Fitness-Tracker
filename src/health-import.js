@@ -37,6 +37,22 @@ function durationMinutes(value, unit) {
   return n;
 }
 
+function round1(value) {
+  return Math.round(Number(value) * 10) / 10;
+}
+
+function normalizeAppleDevice(value) {
+  if (!value) return null;
+  // Apple serializes HKDevice using NSObject's debug description, which embeds
+  // a process-local pointer such as `<<HKDevice: 0x1234abcd>, ...>`. That
+  // pointer is not device identity and can change between exports. Remove it so
+  // a fresh full export does not make an otherwise unchanged workout look new.
+  return String(value)
+    .replace(/^<<HKDevice:\s*0x[0-9a-f]+>,\s*/i, '<HKDevice ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 async function streamTags(file, onTag) {
   const reader = file.stream().getReader();
   const decoder = new TextDecoder('utf-8');
@@ -71,7 +87,7 @@ function workoutFromAttrs(a) {
     active_energy_kcal: Number.isFinite(totalEnergy) && /kcal/i.test(a.totalEnergyBurnedUnit || '') ? totalEnergy : null,
     source_name: a.sourceName || null,
     source_version: a.sourceVersion || null,
-    device: a.device || null,
+    device: normalizeAppleDevice(a.device),
     creation_date: normalizeAppleDate(a.creationDate),
     metadata: {},
   };
@@ -110,7 +126,6 @@ async function collectStrengthWorkouts(file, onProgress) {
             average_bpm: Number.isFinite(average) ? average : null,
             min_bpm: Number.isFinite(min) ? min : null,
             max_bpm: Number.isFinite(max) ? max : null,
-            samples: null,
           };
         }
       }
@@ -152,11 +167,24 @@ function findWorkoutAt(workouts, timestamp) {
   return -1;
 }
 
+function heartRateSampleKey(sample, sourceName = '', device = '') {
+  // Preserve measurements from distinct sources/devices, but do not duplicate an
+  // identical Apple Health Record if the export happens to contain it twice.
+  return `${sample.at}|${sample.end_at || ''}|${sample.bpm}|${sourceName}|${device}`;
+}
+
 async function enrichWithRecords(file, workouts, onProgress) {
   const summaries = workouts.map(() => ({
-    hrCount: 0, hrSum: 0, hrMin: Infinity, hrMax: -Infinity,
-    energyKcal: 0, energyCount: 0,
-    sources: new Set(), devices: new Set(),
+    hrCount: 0,
+    hrSum: 0,
+    hrMin: Infinity,
+    hrMax: -Infinity,
+    hrSamples: [],
+    hrSampleKeys: new Set(),
+    energyKcal: 0,
+    energyCount: 0,
+    sources: new Set(),
+    devices: new Set(),
   }));
   let relevantRecords = 0;
 
@@ -174,13 +202,22 @@ async function enrichWithRecords(file, workouts, onProgress) {
     const s = summaries[index];
     relevantRecords += 1;
     if (a.sourceName) s.sources.add(a.sourceName);
-    if (a.device) s.devices.add(a.device);
+    const normalizedDevice = normalizeAppleDevice(a.device);
+    if (normalizedDevice) s.devices.add(normalizedDevice);
 
     if (a.type === HEART_RATE && /count\/min|bpm/i.test(a.unit || 'count/min')) {
-      s.hrCount += 1;
-      s.hrSum += value;
-      s.hrMin = Math.min(s.hrMin, value);
-      s.hrMax = Math.max(s.hrMax, value);
+      const end = normalizeAppleDate(a.endDate);
+      const sample = { at: start, bpm: value };
+      if (end && end !== start) sample.end_at = end;
+      const key = heartRateSampleKey(sample, a.sourceName, normalizedDevice);
+      if (!s.hrSampleKeys.has(key)) {
+        s.hrSampleKeys.add(key);
+        s.hrSamples.push(sample);
+        s.hrCount += 1;
+        s.hrSum += value;
+        s.hrMin = Math.min(s.hrMin, value);
+        s.hrMax = Math.max(s.hrMax, value);
+      }
     } else if (a.type === ACTIVE_ENERGY && /kcal/i.test(a.unit || 'kcal')) {
       s.energyCount += 1;
       s.energyKcal += value;
@@ -190,16 +227,27 @@ async function enrichWithRecords(file, workouts, onProgress) {
 
   return workouts.map((workout, i) => {
     const s = summaries[i];
+    s.hrSamples.sort((a, b) => String(a.at).localeCompare(String(b.at)) || String(a.end_at || '').localeCompare(String(b.end_at || '')) || Number(a.bpm) - Number(b.bpm));
     const recordHr = s.hrCount ? {
-      average_bpm: Math.round((s.hrSum / s.hrCount) * 10) / 10,
-      min_bpm: Math.round(s.hrMin * 10) / 10,
-      max_bpm: Math.round(s.hrMax * 10) / 10,
-      samples: s.hrCount,
+      average_bpm: round1(s.hrSum / s.hrCount),
+      min_bpm: round1(s.hrMin),
+      max_bpm: round1(s.hrMax),
+      sample_count: s.hrCount,
+      samples: s.hrSamples,
     } : null;
+    const summaryHr = workout.workout_heart_rate || null;
+    const heartRate = summaryHr || recordHr ? {
+      average_bpm: summaryHr?.average_bpm ?? recordHr?.average_bpm ?? null,
+      min_bpm: summaryHr?.min_bpm ?? recordHr?.min_bpm ?? null,
+      max_bpm: summaryHr?.max_bpm ?? recordHr?.max_bpm ?? null,
+      sample_count: recordHr?.sample_count ?? 0,
+      samples: recordHr?.samples ?? [],
+    } : null;
+
     return {
       ...workout,
-      heart_rate: workout.workout_heart_rate || recordHr,
-      active_energy_kcal: workout.active_energy_kcal ?? (s.energyCount ? Math.round(s.energyKcal * 10) / 10 : null),
+      heart_rate: heartRate,
+      active_energy_kcal: workout.active_energy_kcal ?? (s.energyCount ? round1(s.energyKcal) : null),
       matched_record_sources: [...s.sources],
       matched_record_devices: [...s.devices],
     };
@@ -236,7 +284,7 @@ async function importAppleHealthXml(file, { onProgress } = {}) {
   onProgress?.('Pass 1/2: finding Traditional Strength Training workouts…');
   const workouts = await collectStrengthWorkouts(file, onProgress);
   if (!workouts.length) return [];
-  onProgress?.(`Found ${workouts.length} strength workouts. Pass 2/2: matching heart rate and energy records…`);
+  onProgress?.(`Found ${workouts.length} strength workouts. Pass 2/2: matching every heart-rate and energy record…`);
   const enriched = await enrichWithRecords(file, workouts, onProgress);
   return enriched.map(toWorkoutLog);
 }
@@ -254,4 +302,4 @@ async function importAppleHealthFile(file, { onProgress } = {}) {
   return importAppleHealthXml(xmlFile, { onProgress });
 }
 
-export { importAppleHealthXml, importAppleHealthFile, TARGET_WORKOUT, normalizeAppleDate };
+export { importAppleHealthXml, importAppleHealthFile, TARGET_WORKOUT, normalizeAppleDate, normalizeAppleDevice };

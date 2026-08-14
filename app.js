@@ -1,5 +1,5 @@
 import { CONFIG, configProblems } from './config.js';
-import { importUploadedFile } from './src/import-router.js?v=tanita-indicators-v2-20260814';
+import { importUploadedFile } from './src/import-router.js?v=health-delete-indicators-v4-20260814';
 import {
   saveLog,
   saveLogs,
@@ -10,7 +10,7 @@ import {
   parseJsonl,
   sortLogs,
   assertPrivateRepo,
-} from './src/storage.js';
+} from './src/storage.js?v=health-delete-indicators-v4-20260814';
 import {
   setAccessToken,
   clearAuth,
@@ -252,11 +252,15 @@ function renderHealthReview(logs) {
   const ordered = sortLogs(logs);
   const first = ordered[0]?.start_at;
   const last = ordered.at(-1)?.start_at;
-  const withHr = logs.filter((x) => x.heart_rate_bpm?.samples || x.heart_rate_bpm?.average_bpm).length;
+  const withHr = logs.filter((x) => x.heart_rate_bpm?.average_bpm != null).length;
+  const withSamples = logs.filter((x) => Array.isArray(x.heart_rate_bpm?.samples) && x.heart_rate_bpm.samples.length).length;
+  const sampleCount = logs.reduce((sum, x) => sum + (Array.isArray(x.heart_rate_bpm?.samples) ? x.heart_rate_bpm.samples.length : 0), 0);
   $('#health-summary').innerHTML = `
     <p><strong>${logs.length}</strong> Traditional Strength Training workout${logs.length === 1 ? '' : 's'} found.</p>
     <p>${escapeHtml(first || '')} → ${escapeHtml(last || '')}</p>
-    <p>Heart-rate summary available for ${withHr} workout${withHr === 1 ? '' : 's'}.</p>`;
+    <p>Heart-rate summary available for ${withHr} workout${withHr === 1 ? '' : 's'}.</p>
+    <p>Raw heart-rate readings: <strong>${sampleCount.toLocaleString()}</strong> across ${withSamples} workout${withSamples === 1 ? '' : 's'}.</p>
+    <p class="muted compact">Re-importing a full Apple Health export is safe: unchanged deterministic workout IDs are skipped instead of being written again.</p>`;
   $('#health-review').hidden = false;
   $('#import-status').textContent = 'Apple Health import finished. Review the summary, then save to GitHub.';
 }
@@ -296,12 +300,12 @@ async function refreshLogs(message = '') {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'danger';
-      button.textContent = 'Hide';
+      button.textContent = 'Delete';
       button.addEventListener('click', async () => {
-        if (!confirm('Hide this log from the tracker? The original import event stays in the private GitHub repository, so it can be recovered.')) return;
-        $('#log-status').textContent = 'Saving a hide event to GitHub…';
+        if (!confirm('Delete this log from the current private repository files? This rewrites/removes matching data instead of adding a tombstone. Git history may still contain older versions, and importing the original source again can recreate the log.')) return;
+        $('#log-status').textContent = 'Deleting matching log data from GitHub…';
         await deleteLog(log.id);
-        await refreshLogs('Log hidden. Its original import remains recoverable in GitHub.');
+        await refreshLogs('Log deleted from the current repository files. Older copies may still exist in Git history.');
       });
       action.append(button);
       tr.append(action);
@@ -443,7 +447,12 @@ $('#save-body').addEventListener('click', async () => {
   try {
     const log = applyBodyForm();
     $('#import-status').textContent = 'Saving to private GitHub repository…';
-    await saveLog(log);
+    const written = await saveLog(log);
+    if (!written) {
+      await refreshLogs('No repository write was needed; this log is unchanged.');
+      $('#import-status').textContent = `${sourceLabel(log)} is unchanged; no duplicate event was written.`;
+      return;
+    }
     await refreshLogs(`${sourceLabel(log)} body-composition log saved to GitHub.`);
     $('#import-status').textContent = `${sourceLabel(log)} saved to GitHub.`;
   } catch (error) {
@@ -454,10 +463,15 @@ $('#save-body').addEventListener('click', async () => {
 $('#save-health').addEventListener('click', async () => {
   if (!pendingHealthLogs.length) return;
   try {
-    $('#import-status').textContent = `Saving ${pendingHealthLogs.length} workout logs to GitHub…`;
-    await saveLogs(pendingHealthLogs);
-    await refreshLogs(`${pendingHealthLogs.length} Apple Health workout log${pendingHealthLogs.length === 1 ? '' : 's'} saved to GitHub.`);
-    $('#import-status').textContent = `Saved ${pendingHealthLogs.length} Apple Health workout log${pendingHealthLogs.length === 1 ? '' : 's'} to GitHub.`;
+    const total = pendingHealthLogs.length;
+    $('#import-status').textContent = `Comparing ${total} workout logs with GitHub and saving new/changed records…`;
+    const written = await saveLogs(pendingHealthLogs);
+    const skipped = Math.max(0, total - written);
+    const message = written
+      ? `Saved ${written} new/changed Apple Health workout log${written === 1 ? '' : 's'}${skipped ? `; ${skipped} unchanged duplicate${skipped === 1 ? '' : 's'} skipped` : ''}.`
+      : `All ${total} Apple Health workout log${total === 1 ? '' : 's'} were unchanged; no duplicate data was written.`;
+    await refreshLogs(message);
+    $('#import-status').textContent = message;
   } catch (error) {
     $('#import-status').textContent = error.message;
   }
@@ -477,18 +491,19 @@ $('#import-logs').addEventListener('change', async (event) => {
   if (!file) return;
   try {
     const { logs, errors } = parseJsonl(await file.text());
-    if (logs.length) await saveLogs(logs);
-    await refreshLogs(`Imported ${logs.length} log${logs.length === 1 ? '' : 's'} to GitHub${errors.length ? `; ${errors.length} line${errors.length === 1 ? '' : 's'} had errors` : ''}.`);
+    const written = logs.length ? await saveLogs(logs) : 0;
+    const skipped = Math.max(0, logs.length - written);
+    await refreshLogs(`Imported ${written} new/changed log${written === 1 ? '' : 's'} to GitHub${skipped ? `; ${skipped} unchanged duplicate${skipped === 1 ? '' : 's'} skipped` : ''}${errors.length ? `; ${errors.length} line${errors.length === 1 ? '' : 's'} had errors` : ''}.`);
   } catch (error) { $('#log-status').textContent = error.message; }
   finally { event.target.value = ''; }
 });
 
 $('#clear-logs').addEventListener('click', async () => {
-  if (!confirm('Hide all current tracker logs? The original import events are not deleted from GitHub.')) return;
-  if (!confirm('Confirm hiding all current logs.')) return;
+  if (!confirm('Delete ALL current tracker logs from the current private repository files? This is destructive and does not create tombstones. Git history may still contain older versions, and later source imports can recreate records.')) return;
+  if (!confirm('Confirm deleting all current logs.')) return;
   try {
     await clearLogs();
-    await refreshLogs('Current logs hidden. Original import events remain in the repository and Git history.');
+    await refreshLogs('Current logs deleted from repository files. Older versions may still exist in Git history.');
   } catch (error) { $('#log-status').textContent = error.message; }
 });
 

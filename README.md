@@ -7,9 +7,9 @@ A phone-friendly health and fitness tracker hosted through GitHub Pages, with da
 - ACCUNIQ body-composition report imports
 - Apple Health `export.xml` imports
 - Direct Apple Health ZIP uploads without extracting them first
-- Traditional Strength Training imports with heart-rate and active-energy summaries when available
+- Traditional Strength Training imports with full timestamped heart-rate readings plus summary/active-energy data when available
 - Automatic upload/source detection
-- Append-only storage in a private GitHub repository
+- Deduplicated event-based storage in a private GitHub repository; explicit deletes are confirmed
 - Browser access using a fine-grained GitHub token saved in the private data repository
 
 More visualisation and general Apple Health functionality will be added later.

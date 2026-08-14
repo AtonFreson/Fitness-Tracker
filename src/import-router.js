@@ -1,4 +1,4 @@
-import { importAppleHealthFile } from './health-import.js';
+import { importAppleHealthFile } from './health-import.js?v=health-samples-v2-20260814';
 import { detectUploadKind, labelForSource } from './source-detection.js';
 
 async function importUploadedFile(file, { onStatus, onProgress } = {}) {
@@ -6,7 +6,7 @@ async function importUploadedFile(file, { onStatus, onProgress } = {}) {
   const progress = onProgress || onStatus;
 
   if (kind === 'body_composition_report') {
-    const { readBodyCompositionReport } = await import('./receipt-reader.js?v=tanita-indicators-v2-20260814');
+    const { readBodyCompositionReport } = await import('./receipt-reader.js?v=indicator-anchors-v4-20260814');
     const result = await readBodyCompositionReport(file, { onStatus: progress });
     return {
       category: 'body_composition',
