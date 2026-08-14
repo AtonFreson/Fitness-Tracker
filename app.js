@@ -34,12 +34,25 @@ const commonBodyFields = [
   ['metrics.muscle_mass_kg', 'Muscle mass (kg)', 'number'],
 ];
 
-const tanitaFields = [
+// TANITA review order mirrors the DC-360 receipt from top to bottom. Keeping
+// this separate from the shared/ACCUNIQ ordering means ACCUNIQ stays exactly
+// as it was while TANITA starts with its INPUT section and ends with the
+// BIOELECTRICAL DATA table.
+const tanitaReviewFields = [
+  // INPUT
   ['input.body_type', 'Body type', 'text'],
   ['input.gender', 'Gender', 'text'],
   ['input.age', 'Age', 'number'],
   ['input.height_cm', 'Height (cm)', 'number'],
   ['input.clothes_weight_kg', 'Clothes weight (kg)', 'number'],
+  ['measured_at_local', 'Measured at', 'text'],
+
+  // RESULT
+  ['metrics.weight_kg', 'Weight (kg)', 'number'],
+  ['metrics.fat_percent', 'Body fat (%)', 'number'],
+  ['metrics.fat_mass_kg', 'Fat mass (kg)', 'number'],
+  ['metrics.ffm_kg', 'Fat-free mass (kg)', 'number'],
+  ['metrics.muscle_mass_kg', 'Muscle mass (kg)', 'number'],
   ['metrics.tbw_kg', 'TBW (kg)', 'number'],
   ['metrics.tbw_percent', 'TBW (%)', 'number'],
   ['metrics.bone_mass_kg', 'Bone mass (kg)', 'number'],
@@ -50,19 +63,25 @@ const tanitaFields = [
   ['metrics.bmi', 'BMI', 'number'],
   ['metrics.ideal_body_weight_kg', 'Ideal body weight (kg)', 'number'],
   ['metrics.degree_of_obesity_percent', 'Degree of obesity (%)', 'number'],
+
+  // DESIRABLE RANGE
   ['reference_ranges.fat_percent.min', 'Fat % range min', 'number'],
   ['reference_ranges.fat_percent.max', 'Fat % range max', 'number'],
   ['reference_ranges.fat_mass_kg.min', 'Fat mass range min (kg)', 'number'],
   ['reference_ranges.fat_mass_kg.max', 'Fat mass range max (kg)', 'number'],
-  ['qualitative.physique_rating', 'Physique rating', 'text'],
-  ['bioelectrical.6.25_khz.r_ohm', 'R 6.25 kHz (Ω)', 'number'],
-  ['bioelectrical.6.25_khz.x_ohm', 'X 6.25 kHz (Ω)', 'number'],
-  ['bioelectrical.50_khz.r_ohm', 'R 50 kHz (Ω)', 'number'],
-  ['bioelectrical.50_khz.x_ohm', 'X 50 kHz (Ω)', 'number'],
+
+  // INDICATOR + PHYSIQUE RATING
   ['indicators.fat_percent.reading', 'Fat % indicator', 'text'],
   ['indicators.bmi.reading', 'BMI indicator', 'text'],
   ['indicators.muscle_mass.reading', 'Muscle mass indicator', 'text'],
   ['indicators.bmr.reading', 'BMR indicator', 'text'],
+  ['qualitative.physique_rating', 'Physique rating', 'text'],
+
+  // BIOELECTRICAL DATA (receipt row order: R across both frequencies, then X)
+  ['bioelectrical.6.25_khz.r_ohm', 'R 6.25 kHz (Ω)', 'number'],
+  ['bioelectrical.50_khz.r_ohm', 'R 50 kHz (Ω)', 'number'],
+  ['bioelectrical.6.25_khz.x_ohm', 'X 6.25 kHz (Ω)', 'number'],
+  ['bioelectrical.50_khz.x_ohm', 'X 50 kHz (Ω)', 'number'],
 ];
 
 const accuniqFields = [
@@ -160,7 +179,9 @@ function attachPreview(canvas) {
 }
 
 function fieldsForBodyLog(log) {
-  const available = [...commonBodyFields, ...(log.source?.type === 'accuniq_report' ? accuniqFields : tanitaFields)];
+  const available = log.source?.type === 'accuniq_report'
+    ? [...commonBodyFields, ...accuniqFields]
+    : tanitaReviewFields;
   const reviewFields = log.extraction?.review_fields;
   if (!Array.isArray(reviewFields) || !reviewFields.length) return available;
   const wanted = new Set(reviewFields);
