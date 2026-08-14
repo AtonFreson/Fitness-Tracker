@@ -429,6 +429,122 @@ function googleVisionText(response) {
     || '';
 }
 
+function visionVertexNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function googleVisionWords(response) {
+  const words = [];
+  for (const page of response?.fullTextAnnotation?.pages || []) {
+    const pageWidth = Math.max(1, Number(page?.width) || 1);
+    const pageHeight = Math.max(1, Number(page?.height) || 1);
+    for (const block of page?.blocks || []) {
+      for (const paragraph of block?.paragraphs || []) {
+        for (const word of paragraph?.words || []) {
+          const text = (word?.symbols || []).map((symbol) => symbol?.text || '').join('').trim();
+          if (!text) continue;
+          const pixelVertices = word?.boundingBox?.vertices || [];
+          const normalizedVertices = word?.boundingBox?.normalizedVertices || [];
+          const vertices = pixelVertices.length
+            ? pixelVertices.map((vertex) => ({ x: visionVertexNumber(vertex?.x), y: visionVertexNumber(vertex?.y) }))
+            : normalizedVertices.map((vertex) => ({
+                x: visionVertexNumber(vertex?.x) * pageWidth,
+                y: visionVertexNumber(vertex?.y) * pageHeight,
+              }));
+          if (!vertices.length) continue;
+          const xs = vertices.map((vertex) => vertex.x);
+          const ys = vertices.map((vertex) => vertex.y);
+          const left = Math.min(...xs);
+          const right = Math.max(...xs);
+          const top = Math.min(...ys);
+          const bottom = Math.max(...ys);
+          const height = Math.max(1, bottom - top);
+          const width = Math.max(1, right - left);
+          words.push({
+            text,
+            left,
+            right,
+            top,
+            bottom,
+            width,
+            height,
+            centerY: (top + bottom) / 2,
+          });
+        }
+      }
+    }
+  }
+  return words;
+}
+
+/**
+ * Cloud Vision's fullTextAnnotation.text follows document reading order. On a
+ * TANITA receipt that can mean "all labels, then all values" because the RESULT
+ * box is a two-column table. The word bounding boxes are substantially more
+ * useful: rebuild visual rows first, then feed those rows to the normal parser.
+ * This turns Vision into a structured receipt reader rather than another noisy
+ * plain-text OCR source.
+ */
+function googleVisionSpatialText(response) {
+  const words = googleVisionWords(response);
+  if (!words.length) return '';
+
+  const typicalHeight = median(words.map((word) => word.height).filter((height) => height > 0)) || 12;
+  const sorted = [...words].sort((a, b) => a.centerY - b.centerY || a.left - b.left);
+  const lines = [];
+
+  for (const word of sorted) {
+    let bestLine = null;
+    let bestScore = Infinity;
+    for (const line of lines) {
+      const centerGap = Math.abs(word.centerY - line.centerY);
+      const overlap = Math.max(0, Math.min(word.bottom, line.bottom) - Math.max(word.top, line.top));
+      const overlapRatio = overlap / Math.max(1, Math.min(word.height, line.height));
+      const tolerance = Math.max(4, typicalHeight * 0.85, Math.min(word.height, line.height) * 0.70);
+      if (centerGap <= tolerance || overlapRatio >= 0.35) {
+        const score = centerGap - overlapRatio * typicalHeight * 0.4;
+        if (score < bestScore) {
+          bestScore = score;
+          bestLine = line;
+        }
+      }
+    }
+
+    if (!bestLine) {
+      lines.push({
+        words: [word],
+        top: word.top,
+        bottom: word.bottom,
+        height: word.height,
+        centerY: word.centerY,
+      });
+      continue;
+    }
+
+    bestLine.words.push(word);
+    bestLine.top = Math.min(bestLine.top, word.top);
+    bestLine.bottom = Math.max(bestLine.bottom, word.bottom);
+    bestLine.height = Math.max(1, bestLine.bottom - bestLine.top);
+    bestLine.centerY = bestLine.words.reduce((sum, item) => sum + item.centerY, 0) / bestLine.words.length;
+  }
+
+  lines.sort((a, b) => a.centerY - b.centerY || Math.min(...a.words.map((word) => word.left)) - Math.min(...b.words.map((word) => word.left)));
+  return lines
+    .map((line) => line.words.sort((a, b) => a.left - b.left).map((word) => word.text).join(' '))
+    .filter(Boolean)
+    .join('\n');
+}
+
+function insertDiagnosticDetails(diagnostic, details = []) {
+  const clean = details.filter(Boolean).map((line) => redactDiagnosticText(line));
+  if (!clean.length) return diagnostic;
+  const marker = '--- END EXTRACTION DIAGNOSTICS ---';
+  const index = diagnostic.lastIndexOf(marker);
+  if (index < 0) return `${diagnostic}\n${clean.join('\n')}`;
+  return `${diagnostic.slice(0, index)}${clean.join('\n')}\n${diagnostic.slice(index)}`;
+}
+
 function tanitaBioCount(parsed) {
   return [
     parsed?.bioelectrical?.['6.25_khz']?.r_ohm,
@@ -436,6 +552,11 @@ function tanitaBioCount(parsed) {
     parsed?.bioelectrical?.['50_khz']?.r_ohm,
     parsed?.bioelectrical?.['50_khz']?.x_ohm,
   ].filter((value) => value != null).length;
+}
+
+function tanitaCoreCount(parsed) {
+  const keys = ['weight_kg', 'fat_percent', 'ffm_kg', 'muscle_mass_kg', 'tbw_kg', 'tbw_percent', 'bone_mass_kg', 'bmr_kcal', 'visceral_fat_rating', 'bmi'];
+  return keys.filter((key) => parsed?.metrics?.[key] != null).length;
 }
 
 function tanitaCloudResultIsStrong(parsed) {
@@ -644,30 +765,60 @@ async function googleVisionReceipt(canvas, { onStatus, fileName = '' } = {}) {
 
   const responses = payload?.responses || [];
   const textCandidates = [];
+  const displayCandidates = [];
   const perImageErrors = [];
+  let spatialResponseCount = 0;
+  let ocrTextResponseCount = 0;
   for (let i = 0; i < images.length; i += 1) {
     const item = responses[i];
     if (item?.error?.message) {
       perImageErrors.push({ name: images[i].name, message: item.error.message });
       continue;
     }
-    const text = googleVisionText(item).trim();
-    if (text) textCandidates.push({ name: `GOOGLE VISION ${images[i].name}`, text });
+
+    const naturalText = googleVisionText(item).trim();
+    const spatialText = googleVisionSpatialText(item).trim();
+    if (naturalText || spatialText) ocrTextResponseCount += 1;
+
+    // Parse the spatially reconstructed rows whenever geometry is available.
+    // Unlike fullTextAnnotation.text this preserves TANITA's label/value rows.
+    if (spatialText) {
+      spatialResponseCount += 1;
+      const name = `GOOGLE VISION ${images[i].name} (SPATIAL)`;
+      textCandidates.push({ name, text: spatialText });
+      displayCandidates.push({ name, text: spatialText });
+    } else if (naturalText) {
+      const name = `GOOGLE VISION ${images[i].name}`;
+      textCandidates.push({ name, text: naturalText });
+      displayCandidates.push({ name, text: naturalText });
+    }
+
+    // Keep the native reading-order text for the full page as a debugging aid.
+    // It is intentionally not used as a parser vote when spatial text exists.
+    if (i === 0 && naturalText && spatialText && naturalText !== spatialText) {
+      displayCandidates.push({ name: 'GOOGLE VISION FULL (NATIVE READING ORDER)', text: naturalText });
+    }
   }
 
-  const diagnostic = makeCloudDiagnostic({
+  let diagnostic = makeCloudDiagnostic({
     attempted: true,
     imageNames,
     elapsedMs,
     response,
     payload,
     rawResponseText,
-    textCandidateCount: textCandidates.length,
+    textCandidateCount: ocrTextResponseCount,
     perImageErrors,
     outcome: textCandidates.length
-      ? `request succeeded; ${textCandidates.length} OCR response${textCandidates.length === 1 ? '' : 's'} contained text`
+      ? `request succeeded; ${ocrTextResponseCount} OCR response${ocrTextResponseCount === 1 ? '' : 's'} contained text`
       : 'request succeeded at HTTP level but returned no usable OCR text; local fallback will be used',
   });
+  diagnostic = insertDiagnosticDetails(diagnostic, [
+    `Spatial row reconstruction: ${spatialResponseCount}/${images.length} OCR image${images.length === 1 ? '' : 's'}`,
+    spatialResponseCount
+      ? 'Parser input: Cloud Vision word geometry reconstructed into visual rows'
+      : 'Parser input: native Cloud Vision reading order (no word geometry returned)',
+  ]);
 
   if (!textCandidates.length) {
     throw cloudVisionFailure(
@@ -677,18 +828,33 @@ async function googleVisionReceipt(canvas, { onStatus, fileName = '' } = {}) {
     );
   }
 
-  const combinedText = textCandidates.map(({ name, text }) => `--- ${name} ---\n${text}`).join('\n');
+  const combinedText = displayCandidates.map(({ name, text }) => `--- ${name} ---\n${text}`).join('\n');
   const detected = detectBodyCompositionSource(textCandidates[0].text, fileName);
   const source = filenameLooksTanita ? 'tanita' : detected;
 
   if (source === 'tanita') {
     const tanitaParses = textCandidates.map(({ text }) => parseTanitaText(text, { sourceName: fileName }));
     const parsed = mergeTanitaParses(tanitaParses);
+    const fullParsed = /FULL/.test(textCandidates[0]?.name || '') ? tanitaParses[0] : null;
+    // Crops are recovery votes, not peers of a complete full-page Vision read.
+    // If the spatial full page is already internally consistent, a single crop
+    // misreading one digit should not force several slow local-Tesseract passes.
+    const fullStrong = tanitaCloudResultIsStrong(fullParsed);
+    const strong = fullStrong || tanitaCloudResultIsStrong(parsed);
+    diagnostic = insertDiagnosticDetails(diagnostic, [
+      `Cloud parser completeness: ${Math.round((parsed?.extraction?.completeness || 0) * 100)}%`,
+      `Cloud parser core fields: ${tanitaCoreCount(parsed)}/10`,
+      `Cloud parser bioelectrical fields: ${tanitaBioCount(parsed)}/4`,
+      `Cloud parser conflicts: ${(parsed?.extraction?.conflicted_fields || []).join(', ') || 'none'}`,
+      `Full-page spatial candidate strong: ${fullStrong ? 'yes' : 'no'}`,
+      `Cloud parser warnings: ${(parsed?.extraction?.warnings || []).length}`,
+      `Local Tesseract required: ${strong ? 'no' : 'yes (Cloud parse did not meet the strong-result threshold)'}`,
+    ]);
     return {
       source: 'tanita',
       parsed,
       text: combinedText,
-      method: 'google-vision:document-text-consensus',
+      method: 'google-vision:spatial-document-consensus',
       textCandidates,
       tanitaParses,
       diagnostic,
