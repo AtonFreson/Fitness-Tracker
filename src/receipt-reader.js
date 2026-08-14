@@ -4,6 +4,8 @@ import { parseTanitaText, toBodyCompositionLog, mergeTanitaParses } from './tani
 import { parseAccuniqText, toAccuniqBodyCompositionLog } from './accuniq-parser.js';
 import { detectBodyCompositionSource, labelForSource } from './source-detection.js';
 
+const EXTRACTOR_BUILD = 'vision-spatial-v2-20260814';
+
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.2.108/build/pdf.worker.min.mjs';
 
 function setStatus(onStatus, message) {
@@ -434,6 +436,29 @@ function visionVertexNumber(value) {
   return Number.isFinite(number) ? number : 0;
 }
 
+function visionWordFromVertices(text, vertices) {
+  const cleanText = String(text || '').trim();
+  if (!cleanText || !vertices?.length) return null;
+  const xs = vertices.map((vertex) => visionVertexNumber(vertex?.x));
+  const ys = vertices.map((vertex) => visionVertexNumber(vertex?.y));
+  const left = Math.min(...xs);
+  const right = Math.max(...xs);
+  const top = Math.min(...ys);
+  const bottom = Math.max(...ys);
+  const height = Math.max(1, bottom - top);
+  const width = Math.max(1, right - left);
+  return {
+    text: cleanText,
+    left,
+    right,
+    top,
+    bottom,
+    width,
+    height,
+    centerY: (top + bottom) / 2,
+  };
+}
+
 function googleVisionWords(response) {
   const words = [];
   for (const page of response?.fullTextAnnotation?.pages || []) {
@@ -447,33 +472,26 @@ function googleVisionWords(response) {
           const pixelVertices = word?.boundingBox?.vertices || [];
           const normalizedVertices = word?.boundingBox?.normalizedVertices || [];
           const vertices = pixelVertices.length
-            ? pixelVertices.map((vertex) => ({ x: visionVertexNumber(vertex?.x), y: visionVertexNumber(vertex?.y) }))
+            ? pixelVertices
             : normalizedVertices.map((vertex) => ({
                 x: visionVertexNumber(vertex?.x) * pageWidth,
                 y: visionVertexNumber(vertex?.y) * pageHeight,
               }));
-          if (!vertices.length) continue;
-          const xs = vertices.map((vertex) => vertex.x);
-          const ys = vertices.map((vertex) => vertex.y);
-          const left = Math.min(...xs);
-          const right = Math.max(...xs);
-          const top = Math.min(...ys);
-          const bottom = Math.max(...ys);
-          const height = Math.max(1, bottom - top);
-          const width = Math.max(1, right - left);
-          words.push({
-            text,
-            left,
-            right,
-            top,
-            bottom,
-            width,
-            height,
-            centerY: (top + bottom) / 2,
-          });
+          const parsed = visionWordFromVertices(text, vertices);
+          if (parsed) words.push(parsed);
         }
       }
     }
+  }
+  if (words.length) return words;
+
+  // Some Vision responses expose word geometry only through textAnnotations.
+  // Entry 0 is the full-page transcription; later entries are individual
+  // tokens with bounding polygons. Use these as a geometry fallback rather
+  // than falling back to the column-ordered transcription.
+  for (const annotation of (response?.textAnnotations || []).slice(1)) {
+    const parsed = visionWordFromVertices(annotation?.description, annotation?.boundingPoly?.vertices || []);
+    if (parsed) words.push(parsed);
   }
   return words;
 }
@@ -486,9 +504,9 @@ function googleVisionWords(response) {
  * This turns Vision into a structured receipt reader rather than another noisy
  * plain-text OCR source.
  */
-function googleVisionSpatialText(response) {
+function googleVisionSpatialResult(response) {
   const words = googleVisionWords(response);
-  if (!words.length) return '';
+  if (!words.length) return { text: '', wordCount: 0, rowCount: 0 };
 
   const typicalHeight = median(words.map((word) => word.height).filter((height) => height > 0)) || 12;
   const sorted = [...words].sort((a, b) => a.centerY - b.centerY || a.left - b.left);
@@ -530,10 +548,11 @@ function googleVisionSpatialText(response) {
   }
 
   lines.sort((a, b) => a.centerY - b.centerY || Math.min(...a.words.map((word) => word.left)) - Math.min(...b.words.map((word) => word.left)));
-  return lines
+  const text = lines
     .map((line) => line.words.sort((a, b) => a.left - b.left).map((word) => word.text).join(' '))
     .filter(Boolean)
     .join('\n');
+  return { text, wordCount: words.length, rowCount: lines.length };
 }
 
 function insertDiagnosticDetails(diagnostic, details = []) {
@@ -630,6 +649,7 @@ function makeCloudDiagnostic({
 } = {}) {
   const lines = [
     '--- EXTRACTION DIAGNOSTICS ---',
+    `Extractor build: ${EXTRACTOR_BUILD}`,
     `Cloud Vision configured: ${configured ? 'yes' : 'no'}`,
     `Cloud Vision request attempted: ${attempted ? 'yes' : 'no'}`,
   ];
@@ -769,6 +789,7 @@ async function googleVisionReceipt(canvas, { onStatus, fileName = '' } = {}) {
   const perImageErrors = [];
   let spatialResponseCount = 0;
   let ocrTextResponseCount = 0;
+  const spatialDetails = [];
   for (let i = 0; i < images.length; i += 1) {
     const item = responses[i];
     if (item?.error?.message) {
@@ -777,7 +798,9 @@ async function googleVisionReceipt(canvas, { onStatus, fileName = '' } = {}) {
     }
 
     const naturalText = googleVisionText(item).trim();
-    const spatialText = googleVisionSpatialText(item).trim();
+    const spatialResult = googleVisionSpatialResult(item);
+    const spatialText = spatialResult.text.trim();
+    spatialDetails.push(`${images[i].name} spatial geometry: ${spatialResult.wordCount} words -> ${spatialResult.rowCount} visual rows`);
     if (naturalText || spatialText) ocrTextResponseCount += 1;
 
     // Parse the spatially reconstructed rows whenever geometry is available.
@@ -818,6 +841,7 @@ async function googleVisionReceipt(canvas, { onStatus, fileName = '' } = {}) {
     spatialResponseCount
       ? 'Parser input: Cloud Vision word geometry reconstructed into visual rows'
       : 'Parser input: native Cloud Vision reading order (no word geometry returned)',
+    ...spatialDetails,
   ]);
 
   if (!textCandidates.length) {
