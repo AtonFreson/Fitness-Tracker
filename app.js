@@ -59,6 +59,11 @@ const tanitaFields = [
   ['bioelectrical.6.25_khz.x_ohm', 'X 6.25 kHz (Ω)', 'number'],
   ['bioelectrical.50_khz.r_ohm', 'R 50 kHz (Ω)', 'number'],
   ['bioelectrical.50_khz.x_ohm', 'X 50 kHz (Ω)', 'number'],
+  ['indicators.fat_percent.level', 'Fat % indicator', 'text'],
+  ['indicators.bmi.level', 'BMI indicator', 'text'],
+  ['indicators.visceral_fat_rating.level', 'Visceral fat indicator', 'text'],
+  ['indicators.muscle_mass.level', 'Muscle mass indicator', 'text'],
+  ['indicators.bmr.level', 'BMR indicator', 'text'],
 ];
 
 const accuniqFields = [
@@ -91,11 +96,12 @@ const accuniqFields = [
 ];
 
 function getPath(obj, path) {
-  return path.split('.').reduce((value, key) => value?.[key], obj);
+  const parts = path.replace('6.25_khz', '6__25_khz').split('.').map((key) => key === '6__25_khz' ? '6.25_khz' : key);
+  return parts.reduce((value, key) => value?.[key], obj);
 }
 
 function setPath(obj, path, value) {
-  const parts = path.split('.');
+  const parts = path.replace('6.25_khz', '6__25_khz').split('.').map((key) => key === '6__25_khz' ? '6.25_khz' : key);
   let cursor = obj;
   for (let i = 0; i < parts.length - 1; i += 1) {
     if (!cursor[parts[i]] || typeof cursor[parts[i]] !== 'object') cursor[parts[i]] = {};
@@ -155,7 +161,11 @@ function attachPreview(canvas) {
 }
 
 function fieldsForBodyLog(log) {
-  return [...commonBodyFields, ...(log.source?.type === 'accuniq_report' ? accuniqFields : tanitaFields)];
+  const available = [...commonBodyFields, ...(log.source?.type === 'accuniq_report' ? accuniqFields : tanitaFields)];
+  const reviewFields = log.extraction?.review_fields;
+  if (!Array.isArray(reviewFields) || !reviewFields.length) return available;
+  const wanted = new Set(reviewFields);
+  return available.filter(([path]) => wanted.has(path));
 }
 
 function renderBodyReview(result) {

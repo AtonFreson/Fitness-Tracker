@@ -239,6 +239,10 @@ function parseAccuniqText(rawText, { sourceName = '' } = {}) {
   };
 
   const bodyType = text.match(/Body\s+Type\s*:\s*([^\r\n]+)/i)?.[1]?.trim() || compact.match(/Body\s+Type\s*:\s*(.+?)(?=\s+Values\b|\s+Body\s+Composition\b|\s+Shows\b|$)/i)?.[1]?.trim() || null;
+  const evaluation = text.match(/Comprehensive\s+Evaluation\s+([\s\S]*?)(?=\s+Analysis\b)/i)?.[1]
+    ?.replace(/\+More/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim() || null;
 
   if (!solved) warnings.push('The ACCUNIQ composition table was only partially recognized. Review the extracted values before saving.');
   if (metrics.weight_kg != null && metrics.ffm_kg != null && metrics.fat_mass_kg != null) {
@@ -249,7 +253,41 @@ function parseAccuniqText(rawText, { sourceName = '' } = {}) {
   const coreKeys = ['weight_kg', 'fat_mass_kg', 'ffm_kg', 'muscle_mass_kg', 'body_water_l', 'bmr_kcal'];
   const coreFound = coreKeys.filter((key) => metrics[key] != null).length;
 
-  return {
+  const reviewFields = ['measured_at_local'];
+  const addIfPrinted = (path, pattern) => {
+    if (pattern.test(text)) reviewFields.push(path);
+  };
+  addIfPrinted('metrics.body_water_l', /Body\s+Water/i);
+  addIfPrinted('metrics.protein_kg', /Protein\s+kg/i);
+  addIfPrinted('metrics.minerals_kg', /Minerals\s+kg/i);
+  addIfPrinted('metrics.fat_mass_kg', /Body\s+Fat\s+kg/i);
+  // The table headings print these cumulative composition values even though
+  // the PDF text order can be awkward.
+  addIfPrinted('metrics.muscle_mass_kg', /Muscle\s+Mass/i);
+  addIfPrinted('metrics.ffm_kg', /Fat[- ]Free\s+Mass/i);
+  addIfPrinted('metrics.weight_kg', /\bWeight\b/i);
+  addIfPrinted('metrics.bmr_kcal', /\bBMR\b/i);
+  addIfPrinted('metrics.tdee_kcal', /\bTDE\b/i);
+  addIfPrinted('metrics.physical_age', /Physical\s+Age/i);
+  addIfPrinted('analysis.score', /\bAnalysis\b/i);
+  addIfPrinted('qualitative.body_type', /Body\s+Type\s*:/i);
+  addIfPrinted('targets.target_weight_kg', /Target\s+Weight/i);
+  addIfPrinted('targets.weight_control_kg', /Weight\s+Control/i);
+  addIfPrinted('targets.muscle_control_kg', /Muscle\s+Control/i);
+  addIfPrinted('targets.fat_control_kg', /Fat\s+Control/i);
+
+  const referenceKeys = ['body_water_l', 'protein_kg', 'minerals_kg', 'muscle_mass_kg', 'ffm_kg', 'fat_mass_kg', 'weight_kg'];
+  for (const key of referenceKeys) {
+    const hasRange = table?.[`${key.replace('_kg', '').replace('_l', '')}_range`] || null;
+    // The explicit table parser has slightly different property names; the
+    // final reference_ranges object below is the authoritative check after it
+    // is constructed. These paths are finalized just before return.
+    if (hasRange) {
+      reviewFields.push(`reference_ranges.${key}.min`, `reference_ranges.${key}.max`);
+    }
+  }
+
+  const parsed = {
     device: 'ACCUNIQ',
     measured_at_local: dateTime.measured_at_local,
     date: dateTime.date,
@@ -279,14 +317,27 @@ function parseAccuniqText(rawText, { sourceName = '' } = {}) {
         weight_kg: assigned.weight_kg ?? null,
       };
     })(),
-    qualitative: { body_type: bodyType },
+    qualitative: { body_type: bodyType, evaluation },
     extraction: {
       completeness: coreFound / coreKeys.length,
       warnings,
       derived_fields: derivedFields,
       date_source: dateTime.date_source,
+      review_fields: reviewFields,
     },
   };
+
+  // Include only ranges that actually exist in this specific report. This is
+  // also resilient when the fallback range assignment was used instead of the
+  // strict table parser.
+  for (const [key, value] of Object.entries(parsed.reference_ranges || {})) {
+    if (value?.min != null && value?.max != null) {
+      parsed.extraction.review_fields.push(`reference_ranges.${key}.min`, `reference_ranges.${key}.max`);
+    }
+  }
+  parsed.extraction.review_fields = [...new Set(parsed.extraction.review_fields)]
+    .filter((path) => !derivedFields.includes(path));
+  return parsed;
 }
 
 function toAccuniqBodyCompositionLog(parsed, { sourceName = '', method = 'pdf-text' } = {}) {
@@ -314,6 +365,7 @@ function toAccuniqBodyCompositionLog(parsed, { sourceName = '', method = 'pdf-te
       warnings: parsed.extraction.warnings,
       derived_fields: parsed.extraction.derived_fields || [],
       date_source: parsed.extraction.date_source || null,
+      review_fields: parsed.extraction.review_fields || ['measured_at_local'],
     },
   };
 }
