@@ -4,7 +4,7 @@ import { parseTanitaText, toBodyCompositionLog, mergeTanitaParses } from './tani
 import { parseAccuniqText, toAccuniqBodyCompositionLog } from './accuniq-parser.js';
 import { detectBodyCompositionSource, labelForSource } from './source-detection.js';
 
-const EXTRACTOR_BUILD = 'vision-spatial-v5';
+const EXTRACTOR_BUILD = 'vision-spatial-v6-fallback-isolated';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.2.108/build/pdf.worker.min.mjs';
 
@@ -531,6 +531,45 @@ function diagnosticIndicatorLines(parsed) {
     });
 }
 
+function parseVisionResult(vision, canvas, fileName) {
+  let source = vision.source;
+  if (source === 'unknown') {
+    source = /TANITA|DC[-_ ]?360/i.test(fileName || '') ? 'tanita' : /ACCUNIQ/i.test(fileName || '') ? 'accuniq' : 'unknown';
+  }
+  if (source === 'unknown') return { source, parsed: null };
+
+  if (source === 'tanita') {
+    const parses = vision.candidates.map((candidate) => parseTanitaText(candidate.text, { sourceName: fileName }));
+    return { source, parsed: attachTanitaIndicators(mergeTanitaParses(parses), canvas, vision.anchors) };
+  }
+
+  const candidates = vision.candidates
+    .map((candidate) => parseAccuniqText(candidate.text, { sourceName: fileName }))
+    .sort((a, b) => completeness(b) - completeness(a));
+  return { source, parsed: candidates[0] || null };
+}
+
+function visionGoodEnough(source, parsed) {
+  const minimum = source === 'tanita' ? 0.75 : 0.65;
+  return completeness(parsed) >= minimum;
+}
+
+function cloudFailureDiagnostics(error, configured) {
+  return [
+    '--- EXTRACTION DIAGNOSTICS ---',
+    `Extractor build: ${EXTRACTOR_BUILD}`,
+    `Cloud Vision configured: ${configured ? 'yes' : 'no'}`,
+    `Cloud Vision outcome: ${configured ? 'failed' : 'not configured'}`,
+    `Cloud Vision detail: ${redact(error?.message || error || 'unavailable')}`,
+    '--- END EXTRACTION DIAGNOSTICS ---',
+  ].join('\n');
+}
+
+async function runQuarantinedFallback(canvas, { onStatus, fileName, reason }) {
+  const module = await import('./fallback/local-ocr.js?v=1');
+  return module.runLocalOcrFallback(canvas, { onStatus, fileName, reason });
+}
+
 async function readBodyCompositionReport(file, { onStatus } = {}) {
   const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '');
   setStatus(onStatus, isPdf ? 'Opening PDF…' : 'Opening image…');
@@ -559,40 +598,109 @@ async function readBodyCompositionReport(file, { onStatus } = {}) {
       log: bodyLog(embedded.source, parsed, file.name, 'pdf-text'),
       rawText: `${diagnostics}\n\n--- EMBEDDED PDF TEXT ---\n${embeddedText}`,
       previewCanvas: canvas,
+      ocrNotice: '',
     };
   }
 
-  const vision = await runVision(canvas, { onStatus, fileName: file.name });
-  let source = vision.source;
-  if (source === 'unknown') {
-    source = /TANITA|DC[-_ ]?360/i.test(file.name || '') ? 'tanita' : /ACCUNIQ/i.test(file.name || '') ? 'accuniq' : 'unknown';
-  }
-  if (source === 'unknown') throw new Error('Could not recognize this report as TANITA DC-360 or ACCUNIQ.');
+  const configured = Boolean(String(CONFIG.googleVisionApiKey || '').trim());
+  let vision = null;
+  let visionResult = null;
+  let cloudError = null;
 
-  let parsed;
-  if (source === 'tanita') {
-    parsed = mergeTanitaParses(vision.candidates.map((candidate) => parseTanitaText(candidate.text, { sourceName: file.name })));
-    parsed = attachTanitaIndicators(parsed, canvas, vision.anchors);
+  if (configured) {
+    try {
+      vision = await runVision(canvas, { onStatus, fileName: file.name });
+      visionResult = parseVisionResult(vision, canvas, file.name);
+      if (visionResult.source !== 'unknown' && visionGoodEnough(visionResult.source, visionResult.parsed)) {
+        const diagnostics = [
+          vision.diagnostic,
+          ...(visionResult.source === 'tanita' ? diagnosticIndicatorLines(visionResult.parsed) : []),
+          `Parser completeness: ${Math.round(completeness(visionResult.parsed) * 100)}%`,
+          `Extraction source: ${visionResult.source}`,
+        ].join('\n');
+        setStatus(onStatus, `Detected ${labelForSource(visionResult.source)}. Review the extracted values.`);
+        return {
+          source: visionResult.source,
+          sourceLabel: labelForSource(visionResult.source),
+          parsed: visionResult.parsed,
+          log: bodyLog(visionResult.source, visionResult.parsed, file.name, 'google-vision:spatial'),
+          rawText: `${diagnostics}\n\n${vision.displayText}`,
+          previewCanvas: canvas,
+          ocrNotice: '',
+        };
+      }
+      cloudError = new Error(`Google OCR result was incomplete (${Math.round(completeness(visionResult?.parsed) * 100)}%).`);
+    } catch (error) {
+      cloudError = error;
+    }
   } else {
-    const parsedCandidates = vision.candidates.map((candidate) => parseAccuniqText(candidate.text, { sourceName: file.name }));
-    parsed = parsedCandidates.sort((a, b) => completeness(b) - completeness(a))[0];
+    cloudError = new Error('Google OCR is not configured.');
   }
+
+  const reason = redact(cloudError?.message || 'Google OCR was unavailable.');
+  setStatus(onStatus, 'Google OCR unavailable — using local OCR fallback…');
+
+  let local;
+  try {
+    local = await runQuarantinedFallback(canvas, { onStatus, fileName: file.name, reason });
+  } catch (fallbackError) {
+    if (visionResult?.source !== 'unknown' && visionResult?.parsed) {
+      const diagnostics = [
+        vision?.diagnostic || cloudFailureDiagnostics(cloudError, configured),
+        `Google parser completeness: ${Math.round(completeness(visionResult.parsed) * 100)}%`,
+        `Local OCR fallback failed: ${redact(fallbackError.message || fallbackError)}`,
+      ].join('\n');
+      setStatus(onStatus, `Detected ${labelForSource(visionResult.source)} with incomplete Google OCR. Review carefully.`);
+      return {
+        source: visionResult.source,
+        sourceLabel: labelForSource(visionResult.source),
+        parsed: visionResult.parsed,
+        log: bodyLog(visionResult.source, visionResult.parsed, file.name, 'google-vision:spatial-partial'),
+        rawText: `${diagnostics}\n\n${vision?.displayText || ''}`,
+        previewCanvas: canvas,
+        ocrNotice: 'Google OCR was incomplete and the local fallback could not run. Review the extracted fields carefully.',
+      };
+    }
+    throw new Error(`${reason} Local OCR fallback also failed: ${redact(fallbackError.message || fallbackError)}`);
+  }
+
+  if (!local?.parsed || local.source === 'unknown') {
+    throw new Error(`${reason} Local OCR fallback could not recognize this report.`);
+  }
+
+  const localParsed = local.source === 'tanita' ? attachTanitaIndicators(local.parsed, canvas) : local.parsed;
+  const keepVision = visionResult?.source === local.source
+    && visionResult?.parsed
+    && completeness(visionResult.parsed) > completeness(localParsed);
+
+  const source = keepVision ? visionResult.source : local.source;
+  const parsed = keepVision ? visionResult.parsed : localParsed;
+  const method = keepVision ? 'google-vision:spatial-partial' : local.method;
+  const notice = configured
+    ? (keepVision
+      ? 'Google OCR was incomplete. Local OCR was checked, but the Google result was more complete; review the fields carefully.'
+      : 'Google OCR was unavailable or incomplete for this import, so local OCR was used.')
+    : 'Google OCR is not configured, so local OCR was used.';
 
   const diagnostics = [
-    vision.diagnostic,
+    vision?.diagnostic || cloudFailureDiagnostics(cloudError, configured),
+    visionResult?.parsed ? `Google parser completeness: ${Math.round(completeness(visionResult.parsed) * 100)}%` : '',
+    local.diagnostic,
     ...(source === 'tanita' ? diagnosticIndicatorLines(parsed) : []),
+    `Selected OCR: ${keepVision ? 'Google Vision partial result' : 'local fallback'}`,
     `Parser completeness: ${Math.round(completeness(parsed) * 100)}%`,
     `Extraction source: ${source}`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   setStatus(onStatus, `Detected ${labelForSource(source)}. Review the extracted values.`);
   return {
     source,
     sourceLabel: labelForSource(source),
     parsed,
-    log: bodyLog(source, parsed, file.name, 'google-vision:spatial'),
-    rawText: `${diagnostics}\n\n${vision.displayText}`,
+    log: bodyLog(source, parsed, file.name, method),
+    rawText: `${diagnostics}\n\n${keepVision ? vision?.displayText || '' : local.text}`,
     previewCanvas: canvas,
+    ocrNotice: notice,
   };
 }
 

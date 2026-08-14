@@ -6,7 +6,7 @@ async function importUploadedFile(file, { onStatus, onProgress } = {}) {
   const progress = onProgress || onStatus;
 
   if (kind === 'body_composition_report') {
-    const { readBodyCompositionReport } = await import('./receipt-reader.js?v=5');
+    const { readBodyCompositionReport } = await import('./receipt-reader.js?v=6');
     const result = await readBodyCompositionReport(file, { onStatus: progress });
     return {
       category: 'body_composition',

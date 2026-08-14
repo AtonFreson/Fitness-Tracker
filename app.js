@@ -1,5 +1,5 @@
 import { CONFIG, configProblems } from './config.js';
-import { importUploadedFile } from './src/import-router.js?v=5';
+import { importUploadedFile } from './src/import-router.js?v=6';
 import {
   saveLog,
   saveLogs,
@@ -155,6 +155,8 @@ function resetImportReview() {
   $('#body-preview').innerHTML = '';
   $('#detected-source').hidden = true;
   $('#detected-source').textContent = '';
+  $('#ocr-notice').hidden = true;
+  $('#ocr-notice').textContent = '';
 }
 
 function attachPreview(canvas) {
@@ -183,6 +185,8 @@ function renderBodyReview(result) {
   $('#body-review').hidden = false;
   $('#body-raw').textContent = result.rawText;
   $('#body-source-summary').textContent = `${result.sourceLabel} · ${result.log.source?.filename || ''}`;
+  $('#ocr-notice').textContent = result.ocrNotice || '';
+  $('#ocr-notice').hidden = !result.ocrNotice;
   const warnings = pendingBodyLog.extraction?.warnings || [];
   $('#body-warnings').innerHTML = warnings.length
     ? warnings.map((w) => `<div class="warning">${escapeHtml(w)}</div>`).join('')

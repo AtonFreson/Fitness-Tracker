@@ -3,7 +3,7 @@
 Phone-friendly tracker hosted on GitHub Pages, with fitness data stored in a separate private GitHub repository.
 
 ## Imports
-- TANITA DC-360 PDF/image scans using Google Cloud Vision OCR
+- TANITA DC-360 PDF/image scans using Google Cloud Vision OCR with an isolated local fallback
 - ACCUNIQ reports
 - Apple Health `export.xml` or the original export ZIP
 - Traditional Strength Training workouts with active energy and timestamped heart-rate samples
