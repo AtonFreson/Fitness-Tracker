@@ -546,10 +546,17 @@ function parseTanitaText(rawText, { sourceName = '' } = {}) {
   const physiqueRating = parsePhysique(text);
   const bioelectrical = parseBioelectrical(text);
   if (physiqueRating != null) reviewFields.push('qualitative.physique_rating');
-  if (bioelectrical?.['6.25_khz']?.r_ohm != null) reviewFields.push('bioelectrical.6.25_khz.r_ohm');
-  if (bioelectrical?.['6.25_khz']?.x_ohm != null) reviewFields.push('bioelectrical.6.25_khz.x_ohm');
-  if (bioelectrical?.['50_khz']?.r_ohm != null) reviewFields.push('bioelectrical.50_khz.r_ohm');
-  if (bioelectrical?.['50_khz']?.x_ohm != null) reviewFields.push('bioelectrical.50_khz.x_ohm');
+
+  // BIOELECTRICAL DATA is part of the DC-360 receipt layout itself, so these
+  // fields are source-guaranteed rather than OCR-guaranteed. Always expose all
+  // four in the TANITA review form. If faint printing defeats OCR completely,
+  // the user can still type the values visible at the bottom of the receipt.
+  reviewFields.push(
+    'bioelectrical.6.25_khz.r_ohm',
+    'bioelectrical.6.25_khz.x_ohm',
+    'bioelectrical.50_khz.r_ohm',
+    'bioelectrical.50_khz.x_ohm',
+  );
 
   return {
     device: 'TANITA DC-360',

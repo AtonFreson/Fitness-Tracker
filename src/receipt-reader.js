@@ -1,4 +1,5 @@
 import * as pdfjsLib from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.2.108/build/pdf.mjs';
+import { CONFIG } from '../config.js';
 import { parseTanitaText, toBodyCompositionLog, mergeTanitaParses } from './tanita-parser.js';
 import { parseAccuniqText, toAccuniqBodyCompositionLog } from './accuniq-parser.js';
 import { detectBodyCompositionSource, labelForSource } from './source-detection.js';
@@ -74,30 +75,42 @@ function dominantCluster(values, tolerance = 0.014) {
   };
 }
 
-function indicatorLevel(name, position) {
-  if (name === 'fat_percent' || name === 'bmi') {
-    if (position < 0.25) return '-';
-    if (position < 0.50) return '0';
-    if (position < 0.75) return '+';
-    return '++';
-  }
-  if (name === 'visceral_fat_rating') {
-    if (position < 0.30) return '<10';
-    if (position < 0.53) return '10-14';
-    return '15+';
-  }
-  if (position < 1 / 3) return '-';
-  if (position < 2 / 3) return '0';
-  return '+';
+function indicatorBand(name, position) {
+  const specs = (name === 'fat_percent' || name === 'bmi')
+    ? [
+        ['-', 0, 0.25],
+        ['0', 0.25, 0.50],
+        ['+', 0.50, 0.75],
+        ['++', 0.75, 1],
+      ]
+    : [
+        ['-', 0, 1 / 3],
+        ['0', 1 / 3, 2 / 3],
+        ['+', 2 / 3, 1],
+      ];
+
+  const clamped = Math.max(0, Math.min(0.999999, position));
+  const [level, start, end] = specs.find(([, a, b]) => clamped >= a && clamped < b) || specs.at(-1);
+  const rawPercent = ((clamped - start) / (end - start)) * 100;
+  // The thermal scans do not justify single-percentage-point precision. Five
+  // percent steps are fine-grained enough to show movement within the printed
+  // category while remaining honest about the image geometry.
+  const sectionPercent = Math.max(0, Math.min(100, Math.round(rawPercent / 5) * 5));
+  return {
+    level,
+    section_percent: sectionPercent,
+    reading: `${level}: ${sectionPercent}%`,
+  };
 }
 
 /**
- * Convert TANITA's five printed indicator bars into categorical data.
+ * Convert TANITA's printed indicator bars into category + within-category position data.
  *
  * This deliberately uses image geometry rather than OCR. The bar fill itself
  * is the information and OCR engines tend to return only the labels beneath
  * it. The DC-360 print layout is fixed: after locating the dark INDICATOR
- * heading, the five bars occur at consistent vertical spacing.
+ * heading, the five bar slots occur at consistent vertical spacing. Visceral fat
+ * is intentionally skipped because its numeric rating already captures the same information.
  */
 function analyzeTanitaIndicators(sourceCanvas) {
   if (!sourceCanvas?.width || !sourceCanvas?.height) return null;
@@ -146,7 +159,9 @@ function analyzeTanitaIndicators(sourceCanvas) {
   if (!bands.length) return null;
   const indicatorHeaderBottom = bands.at(-1)[1];
 
-  const names = ['fat_percent', 'bmi', 'visceral_fat_rating', 'muscle_mass', 'bmr'];
+  // Keep the visceral-fat slot in the layout index so the later bars line up,
+  // but do not store it: the numeric visceral-fat rating is more precise.
+  const names = ['fat_percent', 'bmi', null, 'muscle_mass', 'bmr'];
   const output = {};
   const barLeft = Math.floor(width * 0.025);
   const barRight = Math.ceil(width * 0.965);
@@ -199,11 +214,12 @@ function analyzeTanitaIndicators(sourceCanvas) {
     }
 
     const cluster = dominantCluster(positions);
-    if (!cluster) continue;
+    if (!cluster || !names[index]) continue;
     const clusterFraction = cluster.clusterSize / cluster.sampleSize;
     const confidence = Math.min(0.99, 0.45 + 0.42 * clusterFraction + 0.02 * Math.min(cluster.clusterSize, 6));
+    const band = indicatorBand(names[index], cluster.position);
     output[names[index]] = {
-      level: indicatorLevel(names[index], cluster.position),
+      ...band,
       position: Math.round(cluster.position * 1000) / 1000,
       confidence: Math.round(confidence * 100) / 100,
       source: 'indicator_graph',
@@ -218,7 +234,7 @@ function attachTanitaIndicators(parsed, canvas) {
   if (!indicators) return parsed;
   parsed.indicators = indicators;
   const fields = new Set(parsed.extraction?.review_fields || ['measured_at_local']);
-  for (const key of Object.keys(indicators)) fields.add(`indicators.${key}.level`);
+  for (const key of Object.keys(indicators)) fields.add(`indicators.${key}.reading`);
   const warnings = [...(parsed.extraction?.warnings || [])];
 
   const fat = parsed.metrics?.fat_percent;
@@ -232,14 +248,6 @@ function attachTanitaIndicators(parsed, canvas) {
     }
   }
 
-  const visceral = parsed.metrics?.visceral_fat_rating;
-  const visceralLevel = indicators.visceral_fat_rating?.level;
-  if (visceral != null && visceralLevel) {
-    const graphBand = visceral < 10 ? '<10' : visceral < 15 ? '10-14' : '15+';
-    if (graphBand !== visceralLevel) {
-      warnings.push('Visceral-fat OCR and the printed visceral-fat indicator band disagree; review the numeric rating.');
-    }
-  }
 
   parsed.extraction = {
     ...parsed.extraction,
@@ -406,7 +414,139 @@ function logForSource(source, parsed, fileName, method) {
   throw new Error('Unsupported body-composition source.');
 }
 
-async function ocrReceipt(canvas, { onStatus, fileName = '' } = {}) {
+function canvasBase64Jpeg(canvas, quality = 0.9) {
+  // Cloud Vision accepts inline base64 image content. JPEG keeps a five-zone
+  // TANITA batch small enough for iOS Safari without materially affecting the
+  // high-contrast receipt text.
+  const dataUrl = canvas.toDataURL('image/jpeg', quality);
+  const comma = dataUrl.indexOf(',');
+  return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+}
+
+function googleVisionText(response) {
+  return response?.fullTextAnnotation?.text
+    || response?.textAnnotations?.[0]?.description
+    || '';
+}
+
+function tanitaBioCount(parsed) {
+  return [
+    parsed?.bioelectrical?.['6.25_khz']?.r_ohm,
+    parsed?.bioelectrical?.['6.25_khz']?.x_ohm,
+    parsed?.bioelectrical?.['50_khz']?.r_ohm,
+    parsed?.bioelectrical?.['50_khz']?.x_ohm,
+  ].filter((value) => value != null).length;
+}
+
+function tanitaCloudResultIsStrong(parsed) {
+  if (!parsed) return false;
+  return (parsed.extraction?.completeness || 0) >= 0.90
+    && (parsed.extraction?.warnings?.length || 0) <= 2
+    && (parsed.extraction?.conflicted_fields?.length || 0) === 0
+    && tanitaBioCount(parsed) >= 3;
+}
+
+async function googleVisionReceipt(canvas, { onStatus, fileName = '' } = {}) {
+  const apiKey = String(CONFIG.googleVisionApiKey || '').trim();
+  if (!apiKey) return null;
+
+  const filenameLooksTanita = /TANITA|DC[-_ ]?360/i.test(fileName);
+  const images = [{ name: 'GOOGLE VISION FULL', canvas }];
+
+  // A full receipt plus four source-specific crops is much more reliable on
+  // faint thermal printing than one monolithic OCR call. Cloud Vision batches
+  // them in a single HTTP request; each crop remains an independent OCR vote.
+  if (filenameLooksTanita) {
+    images.push(
+      { name: 'GOOGLE VISION INPUT', canvas: cropCanvas(canvas, 0.00, 0.30) },
+      { name: 'GOOGLE VISION RESULT', canvas: cropCanvas(canvas, 0.22, 0.56) },
+      { name: 'GOOGLE VISION RANGE', canvas: cropCanvas(canvas, 0.48, 0.70) },
+      { name: 'GOOGLE VISION BIOELECTRICAL', canvas: cropCanvas(canvas, 0.80, 1.00) },
+    );
+  }
+
+  setStatus(onStatus, `Cloud OCR: Google Vision (${images.length} image${images.length === 1 ? '' : 's'})…`);
+  const requests = images.map(({ canvas: imageCanvas }) => ({
+    image: { content: canvasBase64Jpeg(imageCanvas) },
+    features: [{ type: 'DOCUMENT_TEXT_DETECTION', model: 'builtin/latest' }],
+    imageContext: { languageHints: ['en'] },
+  }));
+
+  const response = await fetch('https://vision.googleapis.com/v1/images:annotate', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey,
+    },
+    body: JSON.stringify({ requests }),
+  });
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    // Keep the more useful HTTP-level error below.
+  }
+  if (!response.ok) {
+    const detail = payload?.error?.message || `HTTP ${response.status}`;
+    throw new Error(`Google Cloud Vision OCR failed: ${detail}`);
+  }
+
+  const responses = payload?.responses || [];
+  const textCandidates = [];
+  for (let i = 0; i < images.length; i += 1) {
+    const item = responses[i];
+    if (item?.error?.message) continue;
+    const text = googleVisionText(item).trim();
+    if (text) textCandidates.push({ name: images[i].name, text });
+  }
+  if (!textCandidates.length) throw new Error('Google Cloud Vision returned no OCR text.');
+
+  const combinedText = textCandidates.map(({ name, text }) => `--- ${name} ---\n${text}`).join('\n');
+  const detected = detectBodyCompositionSource(textCandidates[0].text, fileName);
+  const source = filenameLooksTanita ? 'tanita' : detected;
+
+  if (source === 'tanita') {
+    const tanitaParses = textCandidates.map(({ text }) => parseTanitaText(text, { sourceName: fileName }));
+    const parsed = mergeTanitaParses(tanitaParses);
+    return {
+      source: 'tanita',
+      parsed,
+      text: combinedText,
+      method: 'google-vision:document-text-consensus',
+      textCandidates,
+      tanitaParses,
+    };
+  }
+
+  if (source === 'accuniq') {
+    // Full-page document OCR preserves ACCUNIQ's table text well; parse the
+    // full response first, then fall back to all cloud text if needed.
+    let parsed = parseAccuniqText(textCandidates[0].text, { sourceName: fileName });
+    if ((parsed.extraction?.completeness || 0) < 0.75) {
+      parsed = parseAccuniqText(combinedText, { sourceName: fileName });
+    }
+    return {
+      source: 'accuniq',
+      parsed,
+      text: combinedText,
+      method: 'google-vision:document-text',
+      textCandidates,
+      tanitaParses: [],
+    };
+  }
+
+  return {
+    source: 'unknown',
+    parsed: null,
+    text: combinedText,
+    method: 'google-vision:document-text',
+    textCandidates,
+    tanitaParses: [],
+  };
+}
+
+async function ocrReceipt(canvas, { onStatus, fileName = '', seedTextCandidates = [], seedTanitaParses = [] } = {}) {
   if (!window.Tesseract?.createWorker) {
     throw new Error('OCR engine did not load. Check your internet connection and reload the page.');
   }
@@ -419,8 +559,8 @@ async function ocrReceipt(canvas, { onStatus, fileName = '' } = {}) {
       preserve_interword_spaces: '1',
     });
 
-    const textCandidates = [];
-    const tanitaParses = [];
+    const textCandidates = [...seedTextCandidates];
+    const tanitaParses = [...seedTanitaParses];
     const remember = (name, text) => {
       textCandidates.push({ name, text });
       tanitaParses.push(parseTanitaText(text, { sourceName: fileName }));
@@ -458,7 +598,7 @@ async function ocrReceipt(canvas, { onStatus, fileName = '' } = {}) {
       ) {
         return {
           text: textCandidates.map(({ name, text }) => `--- ${name} ---\n${text}`).join('\n'),
-          method: 'ocr:consensus-full',
+          method: seedTanitaParses.length ? 'google-vision+tesseract:consensus-full' : 'ocr:consensus-full',
           source: 'tanita',
           parsed: quickMerged,
         };
@@ -508,7 +648,7 @@ async function ocrReceipt(canvas, { onStatus, fileName = '' } = {}) {
     const text = textCandidates.map(({ name, text: value }) => `--- ${name} ---\n${value}`).join('\n');
     const source = detectBodyCompositionSource(text, fileName);
     if (source === 'tanita' || /TANITA/i.test(fileName)) {
-      return { text, method: 'ocr:consensus-multi-pass', source: 'tanita', parsed: merged };
+      return { text, method: seedTanitaParses.length ? 'google-vision+tesseract:consensus-multi-pass' : 'ocr:consensus-multi-pass', source: 'tanita', parsed: merged };
     }
     const parsed = parseForSource(text, fileName);
     return { text, method: 'ocr:multi-pass', source: parsed.source, parsed: parsed.parsed };
@@ -542,7 +682,51 @@ async function readBodyCompositionReport(file, { onStatus } = {}) {
     };
   }
 
-  const { text, method, source: ocrSource, parsed: ocrParsed } = await ocrReceipt(canvas, { onStatus, fileName: file.name });
+  let cloud = null;
+  if (String(CONFIG.googleVisionApiKey || '').trim()) {
+    try {
+      cloud = await googleVisionReceipt(canvas, { onStatus, fileName: file.name });
+      if (cloud?.source === 'accuniq' && (cloud.parsed?.extraction?.completeness || 0) >= 0.75) {
+        const label = labelForSource('accuniq');
+        setStatus(onStatus, `Detected ${label} with Google Cloud Vision. Review the fields before saving.`);
+        return {
+          source: 'accuniq',
+          sourceLabel: label,
+          parsed: cloud.parsed,
+          log: logForSource('accuniq', cloud.parsed, file.name, cloud.method),
+          rawText: cloud.text,
+          previewCanvas: canvas,
+        };
+      }
+      if (cloud?.source === 'tanita' && tanitaCloudResultIsStrong(cloud.parsed)) {
+        const parsed = attachTanitaIndicators(cloud.parsed, canvas);
+        const label = labelForSource('tanita');
+        setStatus(onStatus, `Detected ${label} with Google Cloud Vision. Review the fields before saving.`);
+        return {
+          source: 'tanita',
+          sourceLabel: label,
+          parsed,
+          log: logForSource('tanita', parsed, file.name, cloud.method),
+          rawText: cloud.text,
+          previewCanvas: canvas,
+        };
+      }
+      if (cloud?.source !== 'unknown') {
+        setStatus(onStatus, 'Cloud OCR was partial; combining it with local OCR…');
+      }
+    } catch (error) {
+      console.warn(error);
+      setStatus(onStatus, 'Google Cloud Vision was unavailable; falling back to local OCR…');
+      cloud = null;
+    }
+  }
+
+  const { text, method, source: ocrSource, parsed: ocrParsed } = await ocrReceipt(canvas, {
+    onStatus,
+    fileName: file.name,
+    seedTextCandidates: cloud?.source === 'tanita' ? cloud.textCandidates : [],
+    seedTanitaParses: cloud?.source === 'tanita' ? cloud.tanitaParses : [],
+  });
   const parsedResult = ocrParsed ? { source: ocrSource, parsed: ocrParsed } : parseForSource(text, file.name);
   const source = parsedResult.source !== 'unknown' ? parsedResult.source : ocrSource;
   if (source === 'unknown') {

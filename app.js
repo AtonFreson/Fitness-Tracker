@@ -59,11 +59,10 @@ const tanitaFields = [
   ['bioelectrical.6.25_khz.x_ohm', 'X 6.25 kHz (Ω)', 'number'],
   ['bioelectrical.50_khz.r_ohm', 'R 50 kHz (Ω)', 'number'],
   ['bioelectrical.50_khz.x_ohm', 'X 50 kHz (Ω)', 'number'],
-  ['indicators.fat_percent.level', 'Fat % indicator', 'text'],
-  ['indicators.bmi.level', 'BMI indicator', 'text'],
-  ['indicators.visceral_fat_rating.level', 'Visceral fat indicator', 'text'],
-  ['indicators.muscle_mass.level', 'Muscle mass indicator', 'text'],
-  ['indicators.bmr.level', 'BMR indicator', 'text'],
+  ['indicators.fat_percent.reading', 'Fat % indicator', 'text'],
+  ['indicators.bmi.reading', 'BMI indicator', 'text'],
+  ['indicators.muscle_mass.reading', 'Muscle mass indicator', 'text'],
+  ['indicators.bmr.reading', 'BMR indicator', 'text'],
 ];
 
 const accuniqFields = [
@@ -203,6 +202,18 @@ function applyBodyForm() {
     const value = raw === '' ? null : input.dataset.valueType === 'number' ? Number(raw) : raw;
     setPath(log, input.dataset.path, value);
   }
+  // Keep the structured graph metadata consistent if an indicator reading is
+  // manually corrected in the review form (for example `0: 60%`).
+  for (const key of ['fat_percent', 'bmi', 'muscle_mass', 'bmr']) {
+    const indicator = log.indicators?.[key];
+    if (!indicator?.reading) continue;
+    const match = String(indicator.reading).trim().match(/^(\+\+|\+|0|-)\s*:\s*(\d{1,3})%$/);
+    if (!match) continue;
+    indicator.level = match[1];
+    indicator.section_percent = Math.max(0, Math.min(100, Number(match[2])));
+    indicator.reading = `${indicator.level}: ${indicator.section_percent}%`;
+  }
+
   if (log.measured_at_local) {
     const prefix = log.source?.type === 'accuniq_report' ? 'accuniq' : 'tanita';
     log.id = `${prefix}:${log.measured_at_local}`;

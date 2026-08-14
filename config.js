@@ -8,6 +8,12 @@ export const CONFIG = {
 
   // Folder used by the tracker inside the private repository.
   dataRoot: 'data',
+
+  // Optional: Google Cloud Vision API key for much stronger OCR on scanned
+  // TANITA receipts. Leave blank to use the built-in local Tesseract fallback.
+  // This app is static, so ONLY use a key restricted to your GitHub Pages
+  // website and restricted to the Cloud Vision API. See setup notes.
+  googleVisionApiKey: 'AIzaSyBR6MkWky4-FW06ooQMDHIF_pBUzfSgYjc',
 };
 
 export function configProblems(config = CONFIG) {
