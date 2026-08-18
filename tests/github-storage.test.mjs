@@ -1,11 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeLogs, dataPathForLog, periodForLog, sortLogs } from '../src/storage.js';
+import { mergeLogs, sameUploadRecord, dataPathForLog, periodForLog, sortLogs } from '../src/storage.js';
 
 test('mergeLogs replaces the same deterministic id', () => {
   const first = { id: 'x', kind: 'body_composition', measured_at_local: '2030-01-01T10:00:00', metrics: { weight_kg: 70 } };
   const second = { ...first, metrics: { weight_kg: 71 } };
   assert.deepEqual(mergeLogs([first], [second]), [second]);
+});
+
+test('re-uploading the same body composition source replaces an old timestamp/id', () => {
+  const first = { id: 'tanita:bad-time', kind: 'body_composition', measured_at_local: '2030-01-01T10:00:00', source: { type: 'tanita_receipt', filename: 'scan.pdf' }, metrics: { weight_kg: 70 } };
+  const corrected = { ...first, id: 'tanita:2030-01-01T10:05:00', measured_at_local: '2030-01-01T10:05:00', metrics: { weight_kg: 70.1 } };
+  assert.equal(sameUploadRecord(first, corrected), true);
+  assert.deepEqual(mergeLogs([first], [corrected]), [corrected]);
+});
+
+test('different receipt filenames remain separate records', () => {
+  const a = { id: 'a', kind: 'body_composition', source: { type: 'tanita_receipt', filename: 'a.pdf' } };
+  const b = { id: 'b', kind: 'body_composition', source: { type: 'tanita_receipt', filename: 'b.pdf' } };
+  assert.equal(sameUploadRecord(a, b), false);
+  assert.equal(mergeLogs([a], [b]).length, 2);
 });
 
 test('storage uses one JSON file per month', () => {

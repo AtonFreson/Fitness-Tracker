@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#111827">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>Fitness Tracker</title>
-  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./styles.css?v=7">
 </head>
 <body>
   <section id="auth-gate" class="vault-gate" aria-live="polite">
@@ -16,79 +16,48 @@
       <h1 class="gate-title">Fitness Tracker</h1>
       <p>Measurements and workouts are stored in the configured private GitHub repository.</p>
       <div id="setup-problems" hidden></div>
-
-      <div class="token-setup">
+      <div id="token-setup" class="token-setup">
         <p class="token-step"><strong>1.</strong> Open <code>TRACKER_TOKEN.txt</code> in the private repository and copy its contents.</p>
         <a id="saved-token-link" class="file-button github-link" href="#" target="_blank" rel="noopener">Open saved token on GitHub</a>
         <p class="compact">For initial setup or token replacement: <a id="create-token-link" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">create a fine-grained token</a>.</p>
-
         <p class="token-step"><strong>2.</strong> Paste the token.</p>
-        <label class="token-field">
-          <span>GitHub token</span>
-          <input id="github-token" type="password" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="github_pat_…">
-        </label>
-        <label class="remember-row">
-          <input id="remember-token" type="checkbox" checked>
-          <span>Remember on this browser</span>
-        </label>
+        <label class="token-field"><span>GitHub token</span><input id="github-token" type="password" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="github_pat_…"></label>
+        <label class="remember-row"><input id="remember-token" type="checkbox" checked><span>Remember on this browser</span></label>
         <button id="connect-github" type="button" class="github-signin">Connect GitHub</button>
+        <p id="auth-status" class="status compact" role="status"></p>
       </div>
-
-      <p id="auth-status" class="status" role="status"></p>
+      <div id="auth-loading" class="auth-loading" hidden>
+        <div class="large-dot-spinner" aria-hidden="true"><i></i><i></i><i></i></div>
+        <p id="auth-loading-status" class="status" role="status">Connecting to GitHub…</p>
+        <button id="auth-forget-saved" type="button" class="secondary compact-button">Forget saved token</button>
+      </div>
     </div>
   </section>
 
   <div id="app-shell" hidden>
     <header class="site-header">
-      <div>
-        <p class="eyebrow">GitHub-synced · phone friendly</p>
-        <h1>Fitness Tracker</h1>
-        <p class="subtitle">Automatic import for TANITA, ACCUNIQ, and Apple Health exports.</p>
-      </div>
-      <div class="header-actions">
-        <span id="github-user" class="badge"></span>
-        <span id="sync-state" class="badge">Synced</span>
-        <button id="signout-github" type="button" class="secondary">Forget token</button>
-      </div>
+      <div><p class="eyebrow">GitHub-synced · phone friendly</p><h1>Fitness Tracker</h1><p class="subtitle">Automatic import for TANITA, ACCUNIQ, and Apple Health exports.</p></div>
+      <div class="header-actions"><span id="github-user" class="badge"></span><span id="sync-state" class="badge">Synced</span><button id="signout-github" type="button" class="secondary">Forget token</button></div>
     </header>
-
     <main>
-      <section class="notice secure-notice">
-        <strong id="repo-visibility">Private repository</strong> · <code id="repo-name"></code>. Logs are stored in monthly JSON files under <code>data/events/</code>.
-      </section>
-
+      <section class="notice secure-notice"><strong id="repo-visibility">Private repository</strong> · <code id="repo-name"></code>. Logs are stored in monthly JSON files under <code>data/events/</code>.</section>
       <section class="card" id="import-card">
-        <div class="card-heading">
-          <div>
-            <p class="eyebrow">Automatic source detection</p>
-            <h2>Import gym data</h2>
-          </div>
-          <span class="badge">PDF / image / XML / ZIP</span>
-        </div>
+        <div class="card-heading"><div><p class="eyebrow">Automatic source detection</p><h2>Import gym data</h2></div><span class="badge">PDF / image / XML / ZIP</span></div>
         <p>Choose a TANITA or ACCUNIQ report, Apple Health <code>export.xml</code>, or the original Apple Health export ZIP.</p>
-        <label class="file-button">
-          <input id="import-file" type="file" accept="application/pdf,image/*,text/xml,application/xml,.xml,.zip,application/zip">
-          Choose data file
-        </label>
+        <label id="choose-file-button" class="file-button"><input id="import-file" type="file" accept="application/pdf,image/*,text/xml,application/xml,.xml,.zip,application/zip"><span>Choose data file</span></label>
         <span id="detected-source" class="badge detected" hidden></span>
-        <p id="import-status" class="status" aria-live="polite"></p>
+        <p id="import-status" class="status import-status" aria-live="polite"></p>
         <p id="ocr-notice" class="ocr-notice" role="status" hidden></p>
-
-        <div id="body-preview" class="preview" hidden></div>
-        <div id="body-review" hidden>
-          <h3>Review body-composition data before saving</h3>
-          <p id="body-source-summary" class="muted"></p>
-          <div id="body-warnings"></div>
-          <form id="body-form" class="field-grid"></form>
-          <div class="actions"><button id="save-body" type="button">Save body-composition log to GitHub</button></div>
-          <details><summary>Extraction diagnostic text</summary><pre id="body-raw"></pre></details>
+        <div id="body-review-workspace" class="body-review-workspace">
+          <div id="body-preview" class="preview" hidden></div>
+          <div id="body-review" hidden>
+            <h3>Review body-composition data before saving</h3><p id="body-source-summary" class="muted"></p><div id="body-warnings"></div>
+            <form id="body-form" class="field-grid"></form>
+            <div class="actions action-with-status"><button id="save-body" type="button">Save body-composition log to GitHub</button><span id="save-body-status" class="action-status" role="status"></span></div>
+            <details><summary>Extraction diagnostic text</summary><pre id="body-raw"></pre></details>
+          </div>
         </div>
-
-        <div id="health-review" hidden>
-          <h3>Review Apple Health import</h3>
-          <div id="health-summary"></div>
-          <div class="actions"><button id="save-health" type="button">Save imported workouts to GitHub</button></div>
-        </div>
+        <div id="health-review" hidden><h3>Review Apple Health import</h3><div id="health-summary"></div><div class="actions action-with-status"><button id="save-health" type="button">Save imported workouts to GitHub</button><span id="save-health-status" class="action-status" role="status"></span></div></div>
       </section>
 
       <section class="card info-grid">
@@ -98,28 +67,21 @@
       </section>
 
       <section class="card" id="logs-card">
-        <div class="card-heading">
-          <div><p class="eyebrow">Private GitHub repository</p><h2>Logs</h2></div>
-          <span class="badge" id="log-count">0</span>
-        </div>
-        <div class="actions wrap">
-          <button id="sync-now" type="button">Sync now</button>
-          <button id="export-logs" type="button" class="secondary">Export JSONL</button>
-          <button id="clear-logs" type="button" class="danger">Delete all logs</button>
-        </div>
+        <div class="card-heading"><div><p class="eyebrow">Private GitHub repository</p><h2>Logs</h2></div><span class="badge" id="log-count">0</span></div>
+        <div class="actions wrap"><button id="sync-now" type="button">Sync now</button><button id="export-logs" type="button" class="secondary">Export JSONL</button><button id="clear-logs" type="button" class="danger">Delete all logs</button></div>
         <p id="log-status" class="status" aria-live="polite"></p>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Date</th><th>Source</th><th>Type</th><th>Summary</th><th></th></tr></thead>
-            <tbody id="logs-body"></tbody>
-          </table>
-        </div>
+        <div class="table-wrap"><table><thead><tr><th>Date</th><th>Source</th><th>Type</th><th>Summary</th><th></th></tr></thead><tbody id="logs-body"></tbody></table></div>
       </section>
     </main>
-
     <footer><p>Fitness data is stored in the private GitHub repository.</p></footer>
   </div>
 
-  <script type="module" src="./app.js?v=6"></script>
+  <dialog id="record-dialog" class="record-dialog">
+    <div class="dialog-heading"><div><p class="eyebrow">Full record</p><h2 id="record-title">Record</h2></div><button id="record-close" type="button" class="secondary compact-button" aria-label="Close record editor">Close</button></div>
+    <p class="muted compact">Edit values below, then save. Record IDs and schema versions are kept stable automatically.</p>
+    <div id="record-form" class="record-form"></div>
+    <div class="dialog-footer"><p id="record-status" class="status" role="status"></p><button id="record-save" type="button">Save changes to GitHub</button></div>
+  </dialog>
+  <script type="module" src="./app.js?v=7"></script>
 </body>
 </html>
