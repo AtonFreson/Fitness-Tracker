@@ -178,7 +178,14 @@ async function listEventFiles() {
   return data
     .filter((item) => item?.type === 'file' && /^(?:\d{4}-\d{2}|unknown)\.json$/i.test(item.name || ''))
     .map((item) => ({ path: `${root}/${item.name}`, sha: item.sha }))
-    .sort((a, b) => b.path.localeCompare(a.path));
+    .sort((a, b) => {
+      const aPeriod = a.path.match(/(\d{4}-\d{2})\.json$/)?.[1] || '';
+      const bPeriod = b.path.match(/(\d{4}-\d{2})\.json$/)?.[1] || '';
+      if (aPeriod && bPeriod) return bPeriod.localeCompare(aPeriod);
+      if (aPeriod) return -1;
+      if (bPeriod) return 1;
+      return a.path.localeCompare(b.path);
+    });
 }
 
 async function writeRepoFile(path, text, { sha = null, message }) {
