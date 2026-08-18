@@ -13,6 +13,34 @@ function readingForPosition(name, position, boundaries = null) {
   return { level: levels[section], section_percent: sectionPercent, reading: `${levels[section]}: ${sectionPercent}%` };
 }
 
+function parseReading(value) {
+  const match = String(value || '').trim().match(/^(\+\+|\+|0|-)\s*:\s*(\d{1,3})%$/);
+  if (!match) return null;
+  const percent = clamp(Math.round(Number(match[2]) / 5) * 5, 0, 95);
+  return { level: match[1], section_percent: percent, reading: `${match[1]}: ${percent}%` };
+}
+
+function preserveReviewedIndicators(log, storedLog) {
+  if (!log || !storedLog?.indicators) return log;
+  const next = JSON.parse(JSON.stringify(log));
+  next.indicators = { ...(next.indicators || {}) };
+  for (const name of ['fat_percent', 'bmi', 'muscle_mass', 'bmr']) {
+    const stored = storedLog.indicators?.[name];
+    const parsed = parseReading(stored?.reading);
+    if (!parsed) continue;
+    const position = Number(stored?.position);
+    const legacyGeometryReading = Number.isFinite(position) ? readingForPosition(name, position).reading : null;
+    const wasReviewed = stored?.source === 'manual_review'
+      || (stored?.source === 'indicator_graph' && legacyGeometryReading && legacyGeometryReading !== parsed.reading);
+    if (!wasReviewed) continue;
+    next.indicators[name] = { ...(next.indicators[name] || {}), ...parsed, source: 'manual_review' };
+    delete next.indicators[name].position;
+    delete next.indicators[name].confidence;
+    delete next.indicators[name].locator;
+  }
+  return next;
+}
+
 function resizeCanvas(source, targetWidth = 720) {
   if (!source?.width || source.width <= targetWidth) return source;
   const canvas = document.createElement('canvas');
@@ -55,10 +83,10 @@ function analyzeIndicator(model, name) {
 }
 function refineTanitaIndicators(sourceCanvas, log) {
   const model = imageModel(sourceCanvas); if (!model) return { log, regions: {} }; const next = JSON.parse(JSON.stringify(log)); next.indicators = { ...(next.indicators || {}) }; const regions = {};
-  for (const name of Object.keys(LAYOUT_INDEX)) { const refined = analyzeIndicator(model, name); if (!refined) continue; regions[name] = refined.crop; const existing = next.indicators?.[name]; const existingLevel = String(existing?.reading || '').trim().match(/^(\+\+|\+|0|-)/)?.[1] || existing?.level || null; const suspicious = !existing || existingLevel !== refined.level || Number(existing.position) < 0.12; if (suspicious) { const { crop, ...stored } = refined; next.indicators[name] = stored; } }
+  for (const name of Object.keys(LAYOUT_INDEX)) { const refined = analyzeIndicator(model, name); if (!refined) continue; regions[name] = refined.crop; const existing = next.indicators?.[name]; if (existing?.source === 'manual_review') continue; const { crop, ...stored } = refined; next.indicators[name] = stored; }
   return { log: next, regions };
 }
 function cropIndicatorCanvas(sourceCanvas, region) {
   if (!sourceCanvas?.width || !region) return null; const top = Math.floor(sourceCanvas.height * region.top); const bottom = Math.ceil(sourceCanvas.height * region.bottom); const canvas = document.createElement('canvas'); canvas.width = sourceCanvas.width; canvas.height = Math.max(1, bottom - top); canvas.getContext('2d').drawImage(sourceCanvas, 0, top, sourceCanvas.width, canvas.height, 0, 0, sourceCanvas.width, canvas.height); return canvas;
 }
-export { readingForPosition, refineTanitaIndicators, cropIndicatorCanvas };
+export { readingForPosition, preserveReviewedIndicators, refineTanitaIndicators, cropIndicatorCanvas };
