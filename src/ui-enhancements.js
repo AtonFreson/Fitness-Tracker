@@ -162,7 +162,9 @@ function createLogControls() {
 
 function enhanceRecordEditor() {
   const form = $('#record-form');
-  if (!form) return;
+  const dialog = $('#record-dialog');
+  if (!form || !dialog?.open) return;
+
   for (const field of form.querySelectorAll('.record-field')) {
     const input = field.querySelector('[data-record-path]');
     if (!input) continue;
@@ -172,6 +174,18 @@ function enhanceRecordEditor() {
     field.hidden = !recordEditorPathVisible(path);
     field.classList.toggle('record-graph-reading', /^indicators\..+\.reading$/.test(path));
   }
+}
+
+function scheduleRecordEditorEnhancement() {
+  requestAnimationFrame(() => {
+    try {
+      enhanceRecordEditor();
+    } catch (error) {
+      console.error('Could not enhance record editor:', error);
+      const status = $('#record-status');
+      if (status) status.textContent = 'The record opened, but some display enhancements could not be applied.';
+    }
+  });
 }
 
 function fieldForPath(form, path) {
@@ -254,11 +268,15 @@ function boot() {
     applyLogView();
   }
 
-  const recordForm = $('#record-form');
-  if (recordForm) {
-    new MutationObserver(() => queueMicrotask(enhanceRecordEditor)).observe(recordForm, { childList: true, subtree: true });
-    enhanceRecordEditor();
-  }
+  // Do not observe the record form itself. The app builds the modal synchronously,
+  // and repeatedly observing/reprocessing that subtree can interfere with the
+  // browser's native modal focus/inert handling. Enhance once, after View / edit
+  // has finished opening the dialog.
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest?.('button');
+    if (!button || button.textContent.trim() !== 'View / edit') return;
+    scheduleRecordEditorEnhancement();
+  }, true);
 
   const bodyForm = $('#body-form');
   if (bodyForm) {
