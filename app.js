@@ -26,7 +26,7 @@ import {
   parseIndicatorReading,
   recordEntries,
   coerceRecordValue,
-} from './src/ui-helpers.js?v=1';
+} from './src/ui-helpers.js?v=2';
 import {
   refineTanitaIndicators,
   cropIndicatorCanvas,
@@ -692,6 +692,7 @@ async function saveRecordEditor() {
     setBusy(button, true);
     $('#record-status').textContent = 'Saving changes to GitHub…';
     await saveLog(next);
+    if (next.id !== editingLog.id) await deleteLog(editingLog.id);
 
     logsCache = mergeLogs(logsCache, [next]);
     renderLogs(logsCache);
@@ -776,7 +777,9 @@ $('#save-body').addEventListener('click', async () => {
 
   try {
     const log = applyBodyForm();
+    const previousUpload = findExistingUpload(log);
     const written = await saveLog(log);
+    if (previousUpload && previousUpload.id !== log.id) await deleteLog(previousUpload.id);
 
     logsCache = mergeLogs(logsCache, [log]);
     renderLogs(logsCache);
