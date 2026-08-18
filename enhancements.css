@@ -1,0 +1,149 @@
+.is-busy::after {
+  content: '';
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  line-height: normal;
+  letter-spacing: normal;
+  background:
+    radial-gradient(circle at 50% 12%, currentColor 0 2px, transparent 2.6px),
+    radial-gradient(circle at 82% 72%, currentColor 0 2px, transparent 2.6px),
+    radial-gradient(circle at 18% 72%, currentColor 0 2px, transparent 2.6px);
+  transform-origin: 50% 50%;
+  animation: dot-spin .8s linear infinite;
+}
+
+.log-view-controls {
+  display: grid;
+  grid-template-columns: minmax(170px, .85fr) minmax(220px, 1.2fr) auto auto;
+  gap: 10px;
+  align-items: end;
+  margin: 14px 0 4px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--soft);
+}
+
+.log-control {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: .8rem;
+  font-weight: 750;
+}
+
+.log-control select,
+.log-control input {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.log-visibility {
+  position: relative;
+  margin: 0;
+}
+
+.log-visibility > summary {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  padding: 8px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  white-space: nowrap;
+}
+
+.log-filter-grid {
+  position: absolute;
+  z-index: 5;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 210px;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
+  box-shadow: 0 16px 40px rgb(15 23 42 / .18);
+}
+
+.log-filter-grid label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: .9rem;
+  white-space: nowrap;
+}
+
+.log-filter-grid input {
+  width: 17px;
+  height: 17px;
+}
+
+.record-graph-reading {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 700px) {
+  .log-view-controls {
+    grid-template-columns: 1fr 1fr;
+  }
+  .log-search {
+    grid-column: 1 / -1;
+  }
+  .log-filter-grid {
+    left: 0;
+    right: auto;
+  }
+}
+
+@media (max-width: 460px) {
+  .log-view-controls {
+    grid-template-columns: 1fr;
+  }
+  .log-search {
+    grid-column: auto;
+  }
+  .log-view-controls > button {
+    width: 100%;
+  }
+}
+
+@media (orientation: landscape) and (max-height: 560px) and (max-width: 1000px) {
+  #body-form.field-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #body-form .physique-field {
+    grid-column: 1 / -1;
+  }
+
+  .body-review-workspace .graph-field {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .body-review-workspace .graph-field > label,
+  .body-review-workspace .graph-field > .graph-crop,
+  .body-review-workspace .graph-field > .input-stepper {
+    grid-column: 1;
+  }
+
+  .body-review-workspace .graph-field > .graph-crop {
+    order: 2;
+  }
+
+  .body-review-workspace .graph-field > .input-stepper {
+    order: 3;
+  }
+}
