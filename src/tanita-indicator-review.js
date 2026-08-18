@@ -22,17 +22,24 @@ function parseReading(value) {
 
 function preserveReviewedIndicators(log, storedLog) {
   if (!log || !storedLog?.indicators) return log;
+
+  const storedEntries = ['fat_percent', 'bmi', 'muscle_mass', 'bmr']
+    .map((name) => ({ name, indicator: storedLog.indicators?.[name] }))
+    .filter(({ indicator }) => parseReading(indicator?.reading));
+
+  const recordWasReviewed = storedEntries.some(({ name, indicator }) => {
+    if (indicator?.source === 'manual_review') return true;
+    if (indicator?.source !== 'indicator_graph') return false;
+    const position = Number(indicator?.position);
+    if (!Number.isFinite(position)) return false;
+    return readingForPosition(name, position).reading !== parseReading(indicator.reading).reading;
+  });
+  if (!recordWasReviewed) return log;
+
   const next = JSON.parse(JSON.stringify(log));
   next.indicators = { ...(next.indicators || {}) };
-  for (const name of ['fat_percent', 'bmi', 'muscle_mass', 'bmr']) {
-    const stored = storedLog.indicators?.[name];
-    const parsed = parseReading(stored?.reading);
-    if (!parsed) continue;
-    const position = Number(stored?.position);
-    const legacyGeometryReading = Number.isFinite(position) ? readingForPosition(name, position).reading : null;
-    const wasReviewed = stored?.source === 'manual_review'
-      || (stored?.source === 'indicator_graph' && legacyGeometryReading && legacyGeometryReading !== parsed.reading);
-    if (!wasReviewed) continue;
+  for (const { name, indicator } of storedEntries) {
+    const parsed = parseReading(indicator.reading);
     next.indicators[name] = { ...(next.indicators[name] || {}), ...parsed, source: 'manual_review' };
     delete next.indicators[name].position;
     delete next.indicators[name].confidence;
