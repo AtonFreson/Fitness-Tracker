@@ -21,17 +21,35 @@ function stepIndicatorReading(value, direction, path = '') {
   const parsed = parseIndicatorReading(value) || { level: levels[0], percent: 0 };
   let levelIndex = Math.max(0, levels.indexOf(parsed.level));
   let percent = parsed.percent;
+
   if (direction > 0) {
-    if (percent >= 95) { if (levelIndex < levels.length - 1) levelIndex += 1; percent = 0; }
-    else percent += 5;
+    if (percent >= 95) {
+      if (levelIndex < levels.length - 1) {
+        levelIndex += 1;
+        percent = 0;
+      } else {
+        percent = 95;
+      }
+    } else {
+      percent += 5;
+    }
   } else if (direction < 0) {
-    if (percent <= 0) { if (levelIndex > 0) { levelIndex -= 1; percent = 95; } }
-    else percent -= 5;
+    if (percent <= 0) {
+      if (levelIndex > 0) {
+        levelIndex -= 1;
+        percent = 95;
+      }
+    } else {
+      percent -= 5;
+    }
   }
+
   return `${levels[levelIndex]}: ${percent}%`;
 }
 
-function isPlainObject(value) { return Boolean(value && typeof value === 'object' && !Array.isArray(value)); }
+function isPlainObject(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
 
 function recordEntries(value, prefix = '') {
   const entries = [];
@@ -59,4 +77,11 @@ function coerceRecordValue(raw, kind) {
   return String(raw);
 }
 
-export { decimalStep, indicatorLevels, parseIndicatorReading, stepIndicatorReading, recordEntries, coerceRecordValue };
+export {
+  decimalStep,
+  indicatorLevels,
+  parseIndicatorReading,
+  stepIndicatorReading,
+  recordEntries,
+  coerceRecordValue,
+};
