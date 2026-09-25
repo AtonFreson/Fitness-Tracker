@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>TANITA Batch Scanner</title>
+  <link rel="stylesheet" href="./styles.css?v=7">
+  <link rel="stylesheet" href="./tanita-scan.css?v=1">
+</head>
+<body class="scan-page">
+  <header class="site-header scan-header">
+    <div>
+      <a class="back-link" href="./">Back to Fitness Tracker</a>
+      <p class="eyebrow">TANITA camera batch</p>
+      <h1>Receipt scanner</h1>
+      <p class="subtitle">Take one full-quality photo containing several DC-360 receipts. The page separates and perspective-corrects each receipt, reads only its date, and creates one PDF per receipt.</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="card scan-capture-card">
+      <div class="card-heading">
+        <div><p class="eyebrow">1. Capture</p><h2>Photograph the receipts together</h2></div>
+        <span class="badge">Runs on this page</span>
+      </div>
+      <p>Keep all four corners visible, leave a small gap between receipts, and use a contrasting surface. Receipts may be upside down; the date reader will correct that when it can.</p>
+      <div class="capture-actions">
+        <label class="file-button camera-button">
+          <input id="camera-input" type="file" accept="image/*" capture="environment">
+          <span>Take photo</span>
+        </label>
+        <label class="file-button secondary-file-button">
+          <input id="photo-input" type="file" accept="image/*">
+          <span>Choose photo</span>
+        </label>
+      </div>
+      <p id="scan-status" class="status" role="status">Take one photo with all receipt corners visible.</p>
+    </section>
+
+    <section id="source-preview-wrap" class="card" hidden>
+      <div class="card-heading">
+        <div><p class="eyebrow">2. Detection</p><h2>Detected receipt corners</h2></div>
+      </div>
+      <p>Each numbered outline becomes a separate perspective-corrected PDF.</p>
+      <div class="source-preview"><canvas id="source-preview"></canvas></div>
+    </section>
+
+    <section id="receipt-results" class="card" hidden>
+      <div class="card-heading">
+        <div><p class="eyebrow">3. Prepare</p><h2>Receipt queue</h2></div>
+      </div>
+      <div id="receipt-list" class="receipt-list"></div>
+      <div class="actions">
+        <button id="start-review" type="button" hidden>Review PDFs</button>
+      </div>
+    </section>
+  </main>
+
+  <section id="review-screen" class="review-screen" hidden>
+    <div id="review-content" class="review-content">
+      <header class="review-header">
+        <div>
+          <p class="eyebrow">PDF review</p>
+          <strong id="review-progress">Receipt 1 of 1</strong>
+        </div>
+        <button id="review-close" type="button" class="secondary compact-button">Close</button>
+      </header>
+
+      <div class="review-details">
+        <label class="review-name-field">
+          <span>PDF name</span>
+          <input id="review-name" type="text" autocomplete="off" spellcheck="false">
+        </label>
+        <p id="auto-date-status" class="auto-date-status" hidden></p>
+
+        <section id="manual-date-panel" class="manual-date-panel" hidden>
+          <p><strong>Date needs confirmation.</strong> Type the date exactly as printed on the receipt.</p>
+          <div id="manual-date-crops" class="manual-date-crops"></div>
+          <label class="manual-date-field">
+            <span>Printed date</span>
+            <input id="manual-date" type="text" inputmode="text" autocomplete="off" autocapitalize="characters" placeholder="23/SEP/2026">
+          </label>
+          <p id="manual-date-status" class="compact status"></p>
+        </section>
+      </div>
+
+      <div class="pdf-preview-area">
+        <div class="pdf-sheet"><canvas id="review-canvas"></canvas></div>
+      </div>
+
+      <footer class="review-actions">
+        <button id="review-rotate" type="button" class="secondary">Rotate 180 degrees</button>
+        <button id="confirm-download" type="button">Confirm and download PDF</button>
+        <p id="review-status" class="status" role="status"></p>
+      </footer>
+    </div>
+
+    <div id="review-complete" class="review-complete" hidden>
+      <div class="vault-card">
+        <p class="eyebrow">Finished</p>
+        <h2>PDF queue complete</h2>
+        <p><strong id="review-complete-count">0</strong> PDF files were sent to your device for download.</p>
+        <button id="scan-another" type="button">Scan another photo</button>
+        <a class="back-link complete-back" href="./">Back to Fitness Tracker</a>
+      </div>
+    </div>
+  </section>
+
+  <script src="https://docs.opencv.org/4.10.0/opencv.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
+  <script type="module" src="./src/tanita-scan.js?v=1"></script>
+</body>
+</html>
