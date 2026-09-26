@@ -166,13 +166,13 @@ async function ensureWorker(onStage = null) {
   }
 }
 
-function bitmapToCanvas(bitmap) {
+function pixelsToCanvas(receipt) {
   const canvas = document.createElement('canvas');
-  canvas.width = bitmap.width;
-  canvas.height = bitmap.height;
+  canvas.width = receipt.width;
+  canvas.height = receipt.height;
   const context = canvas.getContext('2d', { alpha: false });
-  context.drawImage(bitmap, 0, 0);
-  bitmap.close?.();
+  const pixels = new Uint8ClampedArray(receipt.buffer);
+  context.putImageData(new ImageData(pixels, receipt.width, receipt.height), 0, 0);
   return canvas;
 }
 
@@ -227,7 +227,7 @@ async function scanReceiptsInWorker(sourceCanvas, { onStage } = {}) {
   const result = await resultPromise;
   onStage?.({ phase: 'receiving-results' });
 
-  const canvases = result.receipts.map(bitmapToCanvas);
+  const canvases = result.receipts.map(pixelsToCanvas);
   debugLog('scanner-worker-result-received', {
     requestId,
     receiptCount: canvases.length,
