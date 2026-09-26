@@ -25,6 +25,7 @@ const state = {
   sourceCanvas: null,
   receipts: [],
   reviewIndex: 0,
+  scanGeneration: 0,
 };
 
 const diagnosticEntries = [];
@@ -291,6 +292,7 @@ function resetResults() {
 
 async function processPhoto(file) {
   if (!file) return;
+  const scanGeneration = ++state.scanGeneration;
   resetResults();
   setProcessing(true);
 
@@ -336,6 +338,8 @@ async function processPhoto(file) {
         }
       },
     });
+
+    if (scanGeneration !== state.scanGeneration) return;
 
     const quads = scanResult.quads;
     const canvases = scanResult.canvases;
@@ -401,12 +405,16 @@ async function processPhoto(file) {
     setDiagnosticStage('Ready for review', 'Ready');
     debugLog('photo-processing-complete', { receiptCount: state.receipts.length });
   } catch (error) {
+    if (scanGeneration !== state.scanGeneration) {
+      debugLog('photo-processing-abandoned', { scanGeneration });
+      return;
+    }
     console.error(error);
     debugError('photo-processing-failed', error);
     setDiagnosticStage('Failed', 'Error');
     setStatus(error.message || String(error), 'error');
   } finally {
-    setProcessing(false);
+    if (scanGeneration === state.scanGeneration) setProcessing(false);
   }
 }
 
@@ -611,6 +619,7 @@ function rotateCurrentReceipt() {
 }
 
 function resetScanner() {
+  state.scanGeneration += 1;
   closeReview();
   resetResults();
   resetScannerWorker();
@@ -629,6 +638,7 @@ for (const input of [$('#camera-input'), $('#photo-input')]) {
 }
 
 $('#cancel-scan').addEventListener('click', () => {
+  state.scanGeneration += 1;
   resetScannerWorker();
   setDiagnosticStage('Cancelled', 'Ready');
   setStatus('Scan cancelled. You can choose the photo again.');
