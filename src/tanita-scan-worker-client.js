@@ -1,33 +1,27 @@
 import { debugLog, debugError } from './tanita-scan-debug.js?v=2';
 
-const OPENCV_SOURCES = [
-  'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js',
-  'https://docs.opencv.org/4.x/opencv.js',
-];
-
-const WORKER_URL = './src/tanita-scan-worker.js?v=2';
-const INIT_TIMEOUT_MS = 30000;
+const WORKER_URL = './src/tanita-scan-worker.js?v=3';
+const INIT_TIMEOUT_MS = 5000;
 const SCAN_TIMEOUT_MS = 90000;
 
 let activeWorker = null;
 let initializingWorker = null;
-let activeSource = null;
 let readyPromise = null;
 let nextRequestId = 1;
 const pending = new Map();
 
 function terminateWorker(reason = 'reset') {
   if (initializingWorker && initializingWorker !== activeWorker) {
-    debugLog('scanner-worker-init-terminated', { reason, source: activeSource });
+    debugLog('scanner-worker-init-terminated', { reason });
     try { initializingWorker.terminate(); } catch {}
   }
   if (activeWorker) {
-    debugLog('scanner-worker-terminated', { reason, source: activeSource });
+    debugLog('scanner-worker-terminated', { reason });
     try { activeWorker.terminate(); } catch {}
   }
+
   initializingWorker = null;
   activeWorker = null;
-  activeSource = null;
   readyPromise = null;
 
   for (const request of pending.values()) {
@@ -37,7 +31,7 @@ function terminateWorker(reason = 'reset') {
   pending.clear();
 }
 
-function attachWorkerEvents(worker, source, resolveReady, rejectReady) {
+function attachWorkerEvents(worker, resolveReady, rejectReady) {
   worker.addEventListener('message', (event) => {
     const message = event.data || {};
 
@@ -45,13 +39,14 @@ function attachWorkerEvents(worker, source, resolveReady, rejectReady) {
       debugLog(message.event || 'scanner-worker-log', {
         ...(message.data || {}),
         workerElapsedMs: message.workerElapsedMs ?? null,
-        source,
       });
       return;
     }
 
     if (message.type === 'ready') {
-      debugLog('scanner-worker-ready', { source });
+      debugLog('scanner-worker-ready', {
+        engine: message.engine || 'built-in-js',
+      });
       resolveReady(worker);
       return;
     }
@@ -60,7 +55,6 @@ function attachWorkerEvents(worker, source, resolveReady, rejectReady) {
       const error = new Error(message.message || 'Receipt detector worker failed.');
       if (message.stack) error.stack = message.stack;
       debugError('scanner-worker-reported-error', error, {
-        source,
         context: message.context || null,
       });
 
@@ -79,12 +73,13 @@ function attachWorkerEvents(worker, source, resolveReady, rejectReady) {
     if (message.type === 'scan-result') {
       const request = pending.get(message.requestId);
       if (!request) return;
+
       clearTimeout(request.timer);
       pending.delete(message.requestId);
       request.resolve({
         quads: message.quads || [],
         receipts: message.receipts || [],
-        source,
+        engine: message.engine || 'built-in-js',
       });
     }
   });
@@ -92,7 +87,6 @@ function attachWorkerEvents(worker, source, resolveReady, rejectReady) {
   worker.addEventListener('error', (event) => {
     const error = new Error(event.message || 'Receipt detector worker crashed.');
     debugError('scanner-worker-error-event', error, {
-      source,
       filename: event.filename || '',
       lineno: event.lineno || null,
       colno: event.colno || null,
@@ -106,18 +100,17 @@ function attachWorkerEvents(worker, source, resolveReady, rejectReady) {
     }
   });
 
-  worker.addEventListener('messageerror', (event) => {
+  worker.addEventListener('messageerror', () => {
     const error = new Error('Receipt detector worker returned an unreadable message.');
-    debugError('scanner-worker-message-error', error, { source });
+    debugError('scanner-worker-message-error', error);
     rejectReady(error);
   });
 }
 
-function startWorkerForSource(source) {
+function startWorker() {
   return new Promise((resolve, reject) => {
     const worker = new Worker(WORKER_URL);
     initializingWorker = worker;
-    activeSource = source;
     let settled = false;
 
     const finishResolve = (value) => {
@@ -137,13 +130,10 @@ function startWorkerForSource(source) {
       reject(error);
     };
 
-    attachWorkerEvents(worker, source, finishResolve, finishReject);
+    attachWorkerEvents(worker, finishResolve, finishReject);
 
     const timer = setTimeout(() => {
-      debugLog('scanner-worker-init-timeout', {
-        source,
-        timeoutMs: INIT_TIMEOUT_MS,
-      });
+      debugLog('scanner-worker-init-timeout', { timeoutMs: INIT_TIMEOUT_MS });
       finishReject(new Error(
         'Background receipt detector did not initialize within '
         + Math.round(INIT_TIMEOUT_MS / 1000)
@@ -151,8 +141,11 @@ function startWorkerForSource(source) {
       ));
     }, INIT_TIMEOUT_MS);
 
-    debugLog('scanner-worker-created', { source, workerUrl: WORKER_URL });
-    worker.postMessage({ type: 'init', url: source });
+    debugLog('scanner-worker-created', {
+      workerUrl: WORKER_URL,
+      engine: 'built-in-js',
+    });
+    worker.postMessage({ type: 'init' });
   });
 }
 
@@ -160,37 +153,14 @@ async function ensureWorker(onStage = null) {
   if (activeWorker) return activeWorker;
   if (readyPromise) return readyPromise;
 
-  readyPromise = (async () => {
-    let lastError = null;
-
-    for (let index = 0; index < OPENCV_SOURCES.length; index += 1) {
-      const source = OPENCV_SOURCES[index];
-      onStage?.({
-        phase: 'loading-detector',
-        sourceIndex: index + 1,
-        sourceCount: OPENCV_SOURCES.length,
-      });
-
-      try {
-        const worker = await startWorkerForSource(source);
-        activeWorker = worker;
-        activeSource = source;
-        debugLog('scanner-worker-source-selected', { source });
-        return worker;
-      } catch (error) {
-        lastError = error;
-        debugError('scanner-worker-source-failed', error, { source });
-      }
-    }
-
-    throw new Error(
-      'The background receipt detector could not start. '
-      + (lastError?.message || 'Both OpenCV sources failed.'),
-    );
-  })();
+  onStage?.({ phase: 'loading-detector' });
+  readyPromise = startWorker();
 
   try {
-    return await readyPromise;
+    const worker = await readyPromise;
+    activeWorker = worker;
+    debugLog('scanner-worker-engine-selected', { engine: 'built-in-js' });
+    return worker;
   } finally {
     if (!activeWorker) readyPromise = null;
   }
@@ -234,7 +204,6 @@ async function scanReceiptsInWorker(sourceCanvas, { onStage } = {}) {
       debugLog('scanner-worker-scan-timeout', {
         requestId,
         timeoutMs: SCAN_TIMEOUT_MS,
-        source: activeSource,
       });
       terminateWorker('scan timeout');
       reject(new Error(
@@ -249,9 +218,9 @@ async function scanReceiptsInWorker(sourceCanvas, { onStage } = {}) {
 
   debugLog('scanner-worker-scan-posted', {
     requestId,
-    source: activeSource,
     width: bitmap.width,
     height: bitmap.height,
+    engine: 'built-in-js',
   });
   worker.postMessage({ type: 'scan', requestId, bitmap }, [bitmap]);
 
@@ -263,13 +232,13 @@ async function scanReceiptsInWorker(sourceCanvas, { onStage } = {}) {
     requestId,
     receiptCount: canvases.length,
     quadCount: result.quads.length,
-    source: result.source,
+    engine: result.engine,
   });
 
   return {
     quads: result.quads,
     canvases,
-    source: result.source,
+    source: result.engine,
   };
 }
 
