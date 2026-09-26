@@ -7,7 +7,7 @@
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>TANITA Batch Scanner</title>
   <link rel="stylesheet" href="./styles.css?v=7">
-  <link rel="stylesheet" href="./tanita-scan.css?v=1">
+  <link rel="stylesheet" href="./tanita-scan.css?v=2">
 </head>
 <body class="scan-page">
   <header class="site-header scan-header">
@@ -37,6 +37,28 @@
         </label>
       </div>
       <p id="scan-status" class="status" role="status">Take one photo with all receipt corners visible.</p>
+    </section>
+
+    <section class="card diagnostic-card" id="scanner-diagnostics">
+      <div class="card-heading">
+        <div><p class="eyebrow">Debug</p><h2>Scanner diagnostics</h2></div>
+        <span id="diagnostic-state" class="badge">Ready</span>
+      </div>
+      <p class="compact">If scanning stalls or fails, download this log and send it back. It contains browser, timing, loader and error information, but no receipt image data or API keys.</p>
+      <div class="diagnostic-grid">
+        <div><span>Current stage</span><strong id="diagnostic-stage">Waiting for photo</strong></div>
+        <div><span>Last event</span><strong id="diagnostic-last-event">Page loaded</strong></div>
+        <div><span>Log entries</span><strong id="diagnostic-count">0</strong></div>
+      </div>
+      <div class="actions wrap">
+        <button id="download-debug-log" type="button" class="secondary">Download diagnostic log</button>
+        <button id="copy-debug-log" type="button" class="secondary">Copy diagnostic log</button>
+      </div>
+      <p id="diagnostic-action-status" class="status compact" role="status"></p>
+      <details class="diagnostic-details">
+        <summary>Recent diagnostic events</summary>
+        <pre id="diagnostic-tail">No events yet.</pre>
+      </details>
     </section>
 
     <section id="source-preview-wrap" class="card" hidden>
@@ -109,6 +131,6 @@
   </section>
 
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
-  <script type="module" src="./src/tanita-scan.js?v=2"></script>
+  <script type="module" src="./src/tanita-scan.js?v=3"></script>
 </body>
 </html>
