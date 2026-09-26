@@ -8,7 +8,7 @@ import {
   rotateCanvas180,
   cropCanvas,
   copyCanvas,
-} from './tanita-scan-image.js';
+} from './tanita-scan-image.js?v=2';
 
 const $ = (selector) => document.querySelector(selector);
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -240,8 +240,9 @@ async function processPhoto(file) {
     setStatus('Opening full-quality photo...');
     state.sourceCanvas = await imageFileToCanvas(file);
 
-    setStatus('Finding receipt corners...');
+    setStatus('Loading receipt detector...');
     state.cv = state.cv || await waitForOpenCv();
+    setStatus('Finding receipt corners...');
     const quads = detectReceiptQuads(state.sourceCanvas, state.cv);
 
     if (!quads.length) {
