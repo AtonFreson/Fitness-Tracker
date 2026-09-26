@@ -1,4 +1,11 @@
 import { CONFIG } from '../config.js';
+import {
+  debugLog,
+  debugError,
+  debugText,
+  downloadDebugLog,
+  initDebugCapture,
+} from './tanita-scan-debug.js?v=1';
 import { normalizeTanitaDate, resolveDateFromOcr, tanitaPdfFilename } from './tanita-scan-core.js';
 import {
   waitForOpenCv,
@@ -8,7 +15,7 @@ import {
   rotateCanvas180,
   cropCanvas,
   copyCanvas,
-} from './tanita-scan-image.js?v=2';
+} from './tanita-scan-image.js?v=3';
 
 const $ = (selector) => document.querySelector(selector);
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -20,10 +27,60 @@ const state = {
   reviewIndex: 0,
 };
 
+const diagnosticEntries = [];
+
+function summarizeDebugEntry(entry) {
+  const data = entry?.data == null ? '' : ' ' + JSON.stringify(entry.data);
+  return '[' + (entry?.elapsedMs ?? 0) + 'ms] ' + (entry?.event || 'event') + data;
+}
+
+function updateDiagnosticPanel(entry = null) {
+  if (entry) {
+    diagnosticEntries.push(entry);
+    if (diagnosticEntries.length > 12) diagnosticEntries.shift();
+  }
+
+  const last = diagnosticEntries.at(-1);
+  const count = $('#diagnostic-count');
+  const lastEvent = $('#diagnostic-last-event');
+  const tail = $('#diagnostic-tail');
+  if (count) count.textContent = String(window.__tanitaDebugCount || diagnosticEntries.length);
+  if (lastEvent && last) lastEvent.textContent = last.event || 'Event';
+  if (tail) {
+    tail.textContent = diagnosticEntries.length
+      ? diagnosticEntries.map(summarizeDebugEntry).join('\n')
+      : 'No events yet.';
+  }
+}
+
+function setDiagnosticStage(stage, state = '') {
+  const stageNode = $('#diagnostic-stage');
+  const badge = $('#diagnostic-state');
+  if (stageNode) stageNode.textContent = stage;
+  if (badge) {
+    badge.textContent = state || stage;
+    badge.dataset.state = state ? state.toLowerCase() : '';
+  }
+  debugLog('stage', { stage, state });
+}
+
+window.addEventListener('tanita-scan-debug-entry', (event) => {
+  window.__tanitaDebugCount = (window.__tanitaDebugCount || 0) + 1;
+  updateDiagnosticPanel(event.detail);
+});
+
+initDebugCapture();
+debugLog('scanner-controller-loaded', {
+  module: 'tanita-scan.js',
+  build: 3,
+  googleVisionConfigured: Boolean(String(CONFIG.googleVisionApiKey || '').trim()),
+});
+
 function setStatus(message, kind = '') {
   const node = $('#scan-status');
   node.textContent = message;
   node.dataset.state = kind;
+  debugLog('ui-status', { message, kind });
 }
 
 function setProcessing(busy) {
@@ -237,13 +294,49 @@ async function processPhoto(file) {
   setProcessing(true);
 
   try {
+    debugLog('photo-selected', {
+      type: file.type || '',
+      sizeBytes: file.size || 0,
+      lastModified: file.lastModified || null,
+    });
+    setDiagnosticStage('Opening photo', 'Working');
     setStatus('Opening full-quality photo...');
+    const photoStarted = performance.now();
     state.sourceCanvas = await imageFileToCanvas(file);
+    debugLog('photo-opened', {
+      elapsedMs: Math.round(performance.now() - photoStarted),
+      width: state.sourceCanvas.width,
+      height: state.sourceCanvas.height,
+      pixels: state.sourceCanvas.width * state.sourceCanvas.height,
+    });
 
+    setDiagnosticStage('Loading OpenCV', 'Working');
     setStatus('Loading receipt detector...');
+    const detectorStarted = performance.now();
     state.cv = state.cv || await waitForOpenCv();
+    debugLog('opencv-ready-in-controller', {
+      elapsedMs: Math.round(performance.now() - detectorStarted),
+      hasMat: Boolean(state.cv?.Mat),
+      hasImread: Boolean(state.cv?.imread),
+    });
+
+    setDiagnosticStage('Finding corners', 'Working');
     setStatus('Finding receipt corners...');
+    const detectionStarted = performance.now();
     const quads = detectReceiptQuads(state.sourceCanvas, state.cv);
+    debugLog('receipt-corners-detected', {
+      elapsedMs: Math.round(performance.now() - detectionStarted),
+      count: quads.length,
+      quads: quads.map((quad) => ({
+        method: quad.method,
+        subpixelRefined: Boolean(quad.subpixelRefined),
+        refinedEdges: quad.refinedEdges ?? 0,
+        points: quad.points.map((point) => ({
+          x: Math.round(point.x * 100) / 100,
+          y: Math.round(point.y * 100) / 100,
+        })),
+      })),
+    });
 
     if (!quads.length) {
       throw new Error(
@@ -263,6 +356,7 @@ async function processPhoto(file) {
       orientationKnown: false,
     }));
 
+    setDiagnosticStage('Reading dates', 'Working');
     setStatus('Reading only the printed date on each receipt...');
     try {
       await readReceiptDates(state.receipts);
@@ -289,8 +383,12 @@ async function processPhoto(file) {
     assignDefaultFilenames();
     renderReceiptCards();
     $('#start-review').hidden = false;
+    setDiagnosticStage('Ready for review', 'Ready');
+    debugLog('photo-processing-complete', { receiptCount: state.receipts.length });
   } catch (error) {
     console.error(error);
+    debugError('photo-processing-failed', error);
+    setDiagnosticStage('Failed', 'Error');
     setStatus(error.message || String(error), 'error');
   } finally {
     setProcessing(false);
@@ -528,3 +626,23 @@ $('#review-name').addEventListener('input', (event) => {
   receipt.customName = true;
 });
 $('#scan-another').addEventListener('click', resetScanner);
+
+$('#download-debug-log').addEventListener('click', () => {
+  downloadDebugLog();
+  $('#diagnostic-action-status').textContent = 'Diagnostic log downloaded.';
+});
+
+$('#copy-debug-log').addEventListener('click', async () => {
+  const status = $('#diagnostic-action-status');
+  try {
+    await navigator.clipboard.writeText(debugText());
+    debugLog('debug-log-copied');
+    status.textContent = 'Diagnostic log copied.';
+  } catch (error) {
+    debugError('debug-log-copy-failed', error);
+    status.textContent = 'Copy failed; use Download diagnostic log instead.';
+  }
+});
+
+setDiagnosticStage('Waiting for photo', 'Ready');
+updateDiagnosticPanel();
