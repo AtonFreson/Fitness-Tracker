@@ -45,7 +45,10 @@
       <section class="card" id="import-card">
         <div class="card-heading"><div><p class="eyebrow">Automatic source detection</p><h2>Import gym data</h2></div><span class="badge">PDF / image / XML / ZIP</span></div>
         <p>Choose a TANITA or ACCUNIQ report, Apple Health <code>export.xml</code>, or the original Apple Health export ZIP.</p>
-        <label id="choose-file-button" class="file-button"><input id="import-file" type="file" accept="application/pdf,image/*,text/xml,application/xml,.xml,.zip,application/zip"><span>Choose data file</span></label>
+        <div class="actions wrap">
+          <label id="choose-file-button" class="file-button"><input id="import-file" type="file" accept="application/pdf,image/*,text/xml,application/xml,.xml,.zip,application/zip"><span>Choose data file</span></label>
+          <a class="file-button" href="./tanita-scan.html">Batch-scan TANITA receipts</a>
+        </div>
         <span id="detected-source" class="badge detected" hidden></span>
         <p id="import-status" class="status import-status" aria-live="polite"></p>
         <p id="ocr-notice" class="ocr-notice" role="status" hidden></p>
