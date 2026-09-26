@@ -7,7 +7,7 @@
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>TANITA Batch Scanner</title>
   <link rel="stylesheet" href="./styles.css?v=7">
-  <link rel="stylesheet" href="./tanita-scan.css?v=4">
+  <link rel="stylesheet" href="./tanita-scan.css?v=5">
 </head>
 <body class="scan-page">
   <header class="site-header scan-header">
@@ -121,8 +121,7 @@
       </div>
 
       <aside id="corner-controls" class="corner-controls" aria-label="Adjust crop corners">
-        <div class="corner-detail-heading"><strong id="selected-corner-label">Top left</strong><span class="detail-scale">2×</span><button id="toggle-corner-controls" type="button" aria-expanded="true" aria-label="Hide corner controls">Hide</button></div>
-        <canvas id="corner-detail" width="384" height="128" aria-label="Magnified view of selected corner"></canvas>
+        <canvas id="corner-detail" width="384" height="256" aria-label="Magnified view of selected corner"></canvas>
         <div class="corner-selectors" role="group" aria-label="Corner to adjust">
           <button type="button" data-corner="0" aria-label="Top left corner" aria-pressed="true">TL</button>
           <button type="button" data-corner="1" aria-label="Top right corner" aria-pressed="false">TR</button>
@@ -130,21 +129,20 @@
           <button type="button" data-corner="2" aria-label="Bottom right corner" aria-pressed="false">BR</button>
         </div>
         <div class="corner-dpad" role="group" aria-label="Move selected corner in photo pixels">
-          <button type="button" class="nudge-up-ten" data-dx="0" data-dy="-10" aria-label="Move up 10 pixels">↑<small>10</small></button>
-          <button type="button" class="nudge-up-one" data-dx="0" data-dy="-1" aria-label="Move up 1 pixel">↑<small>1</small></button>
-          <button type="button" class="nudge-left-ten" data-dx="-10" data-dy="0" aria-label="Move left 10 pixels">←<small>10</small></button>
-          <button type="button" class="nudge-left-one" data-dx="-1" data-dy="0" aria-label="Move left 1 pixel">←<small>1</small></button>
-          <span class="dpad-center" aria-hidden="true">px</span>
-          <button type="button" class="nudge-right-one" data-dx="1" data-dy="0" aria-label="Move right 1 pixel">→<small>1</small></button>
-          <button type="button" class="nudge-right-ten" data-dx="10" data-dy="0" aria-label="Move right 10 pixels">→<small>10</small></button>
-          <button type="button" class="nudge-down-one" data-dx="0" data-dy="1" aria-label="Move down 1 pixel">↓<small>1</small></button>
-          <button type="button" class="nudge-down-ten" data-dx="0" data-dy="10" aria-label="Move down 10 pixels">↓<small>10</small></button>
+          <button type="button" class="pad-slice nudge-up-ten" data-dx="0" data-dy="-10" aria-label="Move up 10 pixels"><span>↑10</span></button>
+          <button type="button" class="pad-slice nudge-up-one" data-dx="0" data-dy="-1" aria-label="Move up 1 pixel"><span>↑1</span></button>
+          <button type="button" class="pad-slice nudge-left-ten" data-dx="-10" data-dy="0" aria-label="Move left 10 pixels"><span>←10</span></button>
+          <button type="button" class="pad-slice nudge-left-one" data-dx="-1" data-dy="0" aria-label="Move left 1 pixel"><span>←1</span></button>
+          <button type="button" class="pad-slice nudge-right-one" data-dx="1" data-dy="0" aria-label="Move right 1 pixel"><span>→1</span></button>
+          <button type="button" class="pad-slice nudge-right-ten" data-dx="10" data-dy="0" aria-label="Move right 10 pixels"><span>→10</span></button>
+          <button type="button" class="pad-slice nudge-down-one" data-dx="0" data-dy="1" aria-label="Move down 1 pixel"><span>↓1</span></button>
+          <button type="button" class="pad-slice nudge-down-ten" data-dx="0" data-dy="10" aria-label="Move down 10 pixels"><span>↓10</span></button>
         </div>
         <span id="corner-adjustment-status" class="visually-hidden" role="status"></span>
       </aside>
 
       <footer class="review-actions">
-        <button id="confirm-download" type="button">Confirm and download PDF</button>
+        <button id="confirm-download" type="button" aria-label="Confirm and download PDF"><span class="confirm-full">Confirm and download PDF</span><span class="confirm-short">Download PDF</span></button>
         <p id="review-status" class="status" role="status"></p>
       </footer>
     </div>
@@ -161,6 +159,6 @@
   </section>
 
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
-  <script type="module" src="./src/tanita-scan.js?v=10"></script>
+  <script type="module" src="./src/tanita-scan.js?v=11"></script>
 </body>
 </html>
