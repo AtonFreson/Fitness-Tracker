@@ -7,7 +7,7 @@
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>TANITA Batch Scanner</title>
   <link rel="stylesheet" href="./styles.css?v=7">
-  <link rel="stylesheet" href="./tanita-scan.css?v=2">
+  <link rel="stylesheet" href="./tanita-scan.css?v=3">
 </head>
 <body class="scan-page">
   <header class="site-header scan-header">
@@ -35,6 +35,7 @@
           <input id="photo-input" type="file" accept="image/*">
           <span>Choose photo</span>
         </label>
+        <button id="cancel-scan" type="button" class="secondary" hidden>Cancel scan</button>
       </div>
       <p id="scan-status" class="status" role="status">Take one photo with all receipt corners visible.</p>
     </section>
@@ -131,6 +132,6 @@
   </section>
 
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
-  <script type="module" src="./src/tanita-scan.js?v=4"></script>
+  <script type="module" src="./src/tanita-scan.js?v=5"></script>
 </body>
 </html>
