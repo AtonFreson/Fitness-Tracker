@@ -1,3 +1,4 @@
+import { debugLog, debugError, cvState } from './tanita-scan-debug.js?v=1';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
@@ -32,6 +33,8 @@ async function unwrapOpenCvCandidate(candidate, timeoutMs) {
 
 async function waitForOpenCvRuntime(timeoutMs = 12000) {
   const started = performance.now();
+  let lastStateLog = -Infinity;
+  debugLog('opencv-runtime-wait-start', { timeoutMs, cv: cvState() });
 
   while (performance.now() - started < timeoutMs) {
     const candidate = await unwrapOpenCvCandidate(
@@ -40,17 +43,35 @@ async function waitForOpenCvRuntime(timeoutMs = 12000) {
     );
     if (candidate) {
       globalThis.cv = candidate;
+      debugLog('opencv-runtime-ready', {
+        elapsedMs: Math.round(performance.now() - started),
+        cv: cvState(),
+      });
       return candidate;
+    }
+    const elapsed = performance.now() - started;
+    if (elapsed - lastStateLog >= 1000) {
+      lastStateLog = elapsed;
+      debugLog('opencv-runtime-waiting', {
+        elapsedMs: Math.round(elapsed),
+        cv: cvState(),
+      });
     }
     await sleep(50);
   }
+  debugLog('opencv-runtime-wait-timeout', {
+    elapsedMs: Math.round(performance.now() - started),
+    cv: cvState(),
+  });
   return null;
 }
 
 function loadScript(url, timeoutMs = 12000) {
   return new Promise((resolve, reject) => {
+    debugLog('opencv-script-load-start', { url, timeoutMs });
     const script = document.createElement('script');
     const timer = setTimeout(() => {
+      debugLog('opencv-script-load-timeout', { url, timeoutMs, cv: cvState() });
       script.remove();
       reject(new Error('Timed out loading ' + url));
     }, timeoutMs);
@@ -61,10 +82,12 @@ function loadScript(url, timeoutMs = 12000) {
 
     script.onload = () => {
       clearTimeout(timer);
+      debugLog('opencv-script-load-event', { url, cv: cvState() });
       resolve(script);
     };
     script.onerror = () => {
       clearTimeout(timer);
+      debugLog('opencv-script-error-event', { url, cv: cvState() });
       script.remove();
       reject(new Error('Failed to load ' + url));
     };
@@ -74,33 +97,51 @@ function loadScript(url, timeoutMs = 12000) {
 }
 
 async function loadOpenCv() {
+  debugLog('opencv-load-begin', {
+    sources: OPENCV_SOURCES,
+    online: navigator.onLine,
+    cv: cvState(),
+  });
   const alreadyReady = await waitForOpenCvRuntime(250);
-  if (alreadyReady) return alreadyReady;
+  if (alreadyReady) {
+    debugLog('opencv-already-ready');
+    return alreadyReady;
+  }
 
   let lastError = null;
   for (const url of OPENCV_SOURCES) {
     try {
+      debugLog('opencv-source-attempt', { url });
       for (const oldScript of document.querySelectorAll('script[data-tanita-opencv]')) {
         oldScript.remove();
       }
       delete globalThis.cv;
 
       await loadScript(url);
+      debugLog('opencv-script-loaded-awaiting-runtime', { url, cv: cvState() });
       const ready = await waitForOpenCvRuntime(15000);
-      if (ready) return ready;
+      if (ready) {
+        debugLog('opencv-source-ready', { url, cv: cvState() });
+        return ready;
+      }
       lastError = new Error('OpenCV loaded but its runtime did not initialize.');
+      debugError('opencv-source-runtime-failed', lastError, { url, cv: cvState() });
     } catch (error) {
       lastError = error;
+      debugError('opencv-source-failed', error, { url, cv: cvState() });
     }
   }
 
-  throw new Error(
+  const finalError = new Error(
     'The receipt detector could not load. '
     + (lastError?.message ? lastError.message : 'Both OpenCV sources failed.'),
   );
+  debugError('opencv-load-failed', finalError, { cv: cvState() });
+  throw finalError;
 }
 
 async function waitForOpenCv() {
+  debugLog('wait-for-opencv-called', { existingPromise: Boolean(openCvLoadPromise), cv: cvState() });
   if (!openCvLoadPromise) {
     openCvLoadPromise = loadOpenCv().catch((error) => {
       openCvLoadPromise = null;
