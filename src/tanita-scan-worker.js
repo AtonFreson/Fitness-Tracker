@@ -1007,7 +1007,7 @@ async function scanImage(bitmap) {
   const roughDetectionQuads = detectPaperQuads(detectionImage);
   if (!roughDetectionQuads.length) {
     bitmap.close?.();
-    return { quads: [], bitmaps: [] };
+    return { quads: [], pixels: [] };
   }
 
   const roughSourceQuads = roughDetectionQuads.map((quad) => ({
