@@ -2,11 +2,9 @@ import { CONFIG } from '../config.js';
 import {
   debugLog,
   debugError,
-  debugText,
-  downloadDebugLog,
   initDebugCapture,
 } from './tanita-scan-debug.js?v=3';
-import { normalizeTanitaDate, resolveDateFromOcr, tanitaPdfFilename } from './tanita-scan-core.js';
+import { normalizeTanitaDate, resolveDateFromOcr, tanitaPdfFilename, formatTanitaDisplayDate } from './tanita-scan-core.js?v=2';
 import {
   imageFileToCanvas,
   rotateCanvas180,
@@ -35,47 +33,9 @@ const state = {
   ocrAbort: null,
 };
 
-const diagnosticEntries = [];
-
-function summarizeDebugEntry(entry) {
-  const data = entry?.data == null ? '' : ' ' + JSON.stringify(entry.data);
-  return '[' + (entry?.elapsedMs ?? 0) + 'ms] ' + (entry?.event || 'event') + data;
-}
-
-function updateDiagnosticPanel(entry = null) {
-  if (entry) {
-    diagnosticEntries.push(entry);
-    if (diagnosticEntries.length > 12) diagnosticEntries.shift();
-  }
-
-  const last = diagnosticEntries.at(-1);
-  const count = $('#diagnostic-count');
-  const lastEvent = $('#diagnostic-last-event');
-  const tail = $('#diagnostic-tail');
-  if (count) count.textContent = String(window.__tanitaDebugCount || diagnosticEntries.length);
-  if (lastEvent && last) lastEvent.textContent = last.event || 'Event';
-  if (tail) {
-    tail.textContent = diagnosticEntries.length
-      ? diagnosticEntries.map(summarizeDebugEntry).join('\n')
-      : 'No events yet.';
-  }
-}
-
 function setDiagnosticStage(stage, state = '') {
-  const stageNode = $('#diagnostic-stage');
-  const badge = $('#diagnostic-state');
-  if (stageNode) stageNode.textContent = stage;
-  if (badge) {
-    badge.textContent = state || stage;
-    badge.dataset.state = state ? state.toLowerCase() : '';
-  }
   debugLog('stage', { stage, state });
 }
-
-window.addEventListener('tanita-scan-debug-entry', (event) => {
-  window.__tanitaDebugCount = (window.__tanitaDebugCount || 0) + 1;
-  updateDiagnosticPanel(event.detail);
-});
 
 initDebugCapture();
 debugLog('scanner-controller-loaded', {
@@ -272,40 +232,10 @@ function renderSourcePreview(quads) {
   $('#source-preview-wrap').hidden = false;
 }
 
-function renderReceiptCards() {
-  const list = $('#receipt-list');
-  list.replaceChildren();
-
-  state.receipts.forEach((receipt, index) => {
-    const card = document.createElement('article');
-    card.className = 'receipt-card';
-
-    const canvas = document.createElement('canvas');
-    copyCanvas(receipt.canvas, canvas, 220);
-
-    const info = document.createElement('div');
-    const title = document.createElement('strong');
-    title.textContent = 'Receipt ' + (index + 1);
-
-    const detail = document.createElement('span');
-    detail.textContent = receipt.date
-      ? receipt.fileName
-      : 'Date needs confirmation';
-
-    info.append(title, detail);
-    card.append(canvas, info);
-    list.append(card);
-  });
-
-  $('#receipt-results').hidden = false;
-}
-
 function resetResults() {
   state.receipts = [];
   state.reviewIndex = 0;
   $('#source-preview-wrap').hidden = true;
-  $('#receipt-results').hidden = true;
-  $('#receipt-list').replaceChildren();
   $('#start-review').hidden = true;
 }
 
@@ -435,7 +365,6 @@ async function processPhoto(file) {
     }
 
     assignDefaultFilenames();
-    renderReceiptCards();
     $('#start-review').hidden = false;
     setDiagnosticStage('Ready for review', 'Ready');
     debugLog('photo-processing-complete', { receiptCount: state.receipts.length });
@@ -600,7 +529,7 @@ function reviewDateState(receipt) {
   } else {
     manual.hidden = true;
     auto.hidden = false;
-    auto.textContent = 'Date read as ' + receipt.date + '.';
+    auto.textContent = 'Date read as ' + formatTanitaDisplayDate(receipt.date) + '.';
   }
   updateDownloadButton();
 }
@@ -902,7 +831,7 @@ $('#corner-controls').addEventListener('keydown', (event) => {
   const direction = directions[event.key];
   if (!direction || event.altKey || event.ctrlKey || event.metaKey) return;
   event.preventDefault();
-  const step = event.shiftKey ? 10 : 1;
+  const step = event.shiftKey ? 5 : 1;
   moveSelectedCorner(direction[0] * step, direction[1] * step);
 });
 $('#review-canvas').addEventListener('click', (event) => {
@@ -928,22 +857,4 @@ $('#review-name').addEventListener('input', (event) => {
 });
 $('#scan-another').addEventListener('click', resetScanner);
 
-$('#download-debug-log').addEventListener('click', () => {
-  downloadDebugLog();
-  $('#diagnostic-action-status').textContent = 'Diagnostic log downloaded.';
-});
-
-$('#copy-debug-log').addEventListener('click', async () => {
-  const status = $('#diagnostic-action-status');
-  try {
-    await navigator.clipboard.writeText(debugText());
-    debugLog('debug-log-copied');
-    status.textContent = 'Diagnostic log copied.';
-  } catch (error) {
-    debugError('debug-log-copy-failed', error);
-    status.textContent = 'Copy failed; use Download diagnostic log instead.';
-  }
-});
-
 setDiagnosticStage('Waiting for photo', 'Ready');
-updateDiagnosticPanel();

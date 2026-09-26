@@ -7,12 +7,11 @@
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>TANITA Batch Scanner</title>
   <link rel="stylesheet" href="./styles.css?v=7">
-  <link rel="stylesheet" href="./tanita-scan.css?v=6">
+  <link rel="stylesheet" href="./tanita-scan.css?v=7">
 </head>
 <body class="scan-page">
   <header class="site-header scan-header">
     <div>
-      <a class="back-link" href="./">Back to Fitness Tracker</a>
       <p class="eyebrow">TANITA camera batch</p>
       <h1>Receipt scanner</h1>
       <p class="subtitle">Take one full-quality photo containing several DC-360 receipts. The page separates and perspective-corrects each receipt, reads only its date, and creates one PDF per receipt.</p>
@@ -40,41 +39,12 @@
       <p id="scan-status" class="status" role="status">Take one photo with all receipt corners visible.</p>
     </section>
 
-    <section class="card diagnostic-card" id="scanner-diagnostics">
-      <div class="card-heading">
-        <div><p class="eyebrow">Debug</p><h2>Scanner diagnostics</h2></div>
-        <span id="diagnostic-state" class="badge">Ready</span>
-      </div>
-      <p class="compact">If scanning stalls or fails, download this log and send it back. It contains browser, timing, loader and error information, but no receipt image data or API keys.</p>
-      <div class="diagnostic-grid">
-        <div><span>Current stage</span><strong id="diagnostic-stage">Waiting for photo</strong></div>
-        <div><span>Last event</span><strong id="diagnostic-last-event">Page loaded</strong></div>
-        <div><span>Log entries</span><strong id="diagnostic-count">0</strong></div>
-      </div>
-      <div class="actions wrap">
-        <button id="download-debug-log" type="button" class="secondary">Download diagnostic log</button>
-        <button id="copy-debug-log" type="button" class="secondary">Copy diagnostic log</button>
-      </div>
-      <p id="diagnostic-action-status" class="status compact" role="status"></p>
-      <details class="diagnostic-details">
-        <summary>Recent diagnostic events</summary>
-        <pre id="diagnostic-tail">No events yet.</pre>
-      </details>
-    </section>
-
     <section id="source-preview-wrap" class="card" hidden>
       <div class="card-heading">
         <div><p class="eyebrow">2. Detection</p><h2>Detected receipt corners</h2></div>
       </div>
       <p>Each numbered outline becomes a separate perspective-corrected PDF.</p>
       <div class="source-preview"><canvas id="source-preview"></canvas></div>
-    </section>
-
-    <section id="receipt-results" class="card" hidden>
-      <div class="card-heading">
-        <div><p class="eyebrow">3. Prepare</p><h2>Receipt queue</h2></div>
-      </div>
-      <div id="receipt-list" class="receipt-list"></div>
       <div class="actions">
         <button id="start-review" type="button" hidden>Review PDFs</button>
       </div>
@@ -129,14 +99,14 @@
           <button type="button" data-corner="2" aria-label="Bottom right corner" aria-pressed="false">BR</button>
         </div>
         <div class="corner-dpad" role="group" aria-label="Move selected corner in photo pixels">
-          <button type="button" class="pad-slice nudge-up-ten" data-dx="0" data-dy="-10" aria-label="Move up 10 pixels"><span>↑10</span></button>
+          <button type="button" class="pad-slice nudge-up-five" data-dx="0" data-dy="-5" aria-label="Move up 5 pixels"><span>↑5</span></button>
           <button type="button" class="pad-slice nudge-up-one" data-dx="0" data-dy="-1" aria-label="Move up 1 pixel"><span>↑1</span></button>
-          <button type="button" class="pad-slice nudge-left-ten" data-dx="-10" data-dy="0" aria-label="Move left 10 pixels"><span>←10</span></button>
+          <button type="button" class="pad-slice nudge-left-five" data-dx="-5" data-dy="0" aria-label="Move left 5 pixels"><span>←5</span></button>
           <button type="button" class="pad-slice nudge-left-one" data-dx="-1" data-dy="0" aria-label="Move left 1 pixel"><span>←1</span></button>
           <button type="button" class="pad-slice nudge-right-one" data-dx="1" data-dy="0" aria-label="Move right 1 pixel"><span>→1</span></button>
-          <button type="button" class="pad-slice nudge-right-ten" data-dx="10" data-dy="0" aria-label="Move right 10 pixels"><span>→10</span></button>
+          <button type="button" class="pad-slice nudge-right-five" data-dx="5" data-dy="0" aria-label="Move right 5 pixels"><span>→5</span></button>
           <button type="button" class="pad-slice nudge-down-one" data-dx="0" data-dy="1" aria-label="Move down 1 pixel"><span>↓1</span></button>
-          <button type="button" class="pad-slice nudge-down-ten" data-dx="0" data-dy="10" aria-label="Move down 10 pixels"><span>↓10</span></button>
+          <button type="button" class="pad-slice nudge-down-five" data-dx="0" data-dy="5" aria-label="Move down 5 pixels"><span>↓5</span></button>
         </div>
         <span id="corner-adjustment-status" class="visually-hidden" role="status"></span>
       </aside>
@@ -153,12 +123,11 @@
         <h2>PDF queue complete</h2>
         <p><strong id="review-complete-count">0</strong> PDF files were sent to your device for download.</p>
         <button id="scan-another" type="button">Scan another photo</button>
-        <a class="back-link complete-back" href="./">Back to Fitness Tracker</a>
       </div>
     </div>
   </section>
 
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
-  <script type="module" src="./src/tanita-scan.js?v=13"></script>
+  <script type="module" src="./src/tanita-scan.js?v=14"></script>
 </body>
 </html>

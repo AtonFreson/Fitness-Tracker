@@ -32,6 +32,7 @@ import {
   cropIndicatorCanvas,
   preserveReviewedIndicators,
 } from './src/tanita-indicator-review.js?v=2';
+import { cleanPhysiqueRating } from './src/text-field-repair.js?v=2';
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -344,6 +345,9 @@ function normalizeIndicators(log, originalLog = null) {
 
 function renderBodyReview(result) {
   pendingBodyLog = deepClone(result.log);
+  if (pendingBodyLog.qualitative?.physique_rating != null) {
+    pendingBodyLog.qualitative.physique_rating = cleanPhysiqueRating(pendingBodyLog.qualitative.physique_rating);
+  }
 
   if (pendingBodyLog.source?.type === 'tanita_receipt' && result.previewCanvas) {
     const refined = refineTanitaIndicators(result.previewCanvas, pendingBodyLog);
@@ -372,8 +376,20 @@ function renderBodyReview(result) {
 
   const form = $('#body-form');
   form.innerHTML = '';
-  for (const [path, label, type] of fieldsForBodyLog(pendingBodyLog)) {
-    renderBodyField(form, path, label, type);
+  const fields = fieldsForBodyLog(pendingBodyLog);
+  for (let index = 0; index < fields.length; index += 1) {
+    const [path, label, type] = fields[index];
+    if (path === 'reference_ranges.fat_percent.min'
+      && fields[index + 1]?.[0] === 'reference_ranges.fat_percent.max') {
+      const pair = document.createElement('div');
+      pair.className = 'fat-range-pair';
+      renderBodyField(pair, path, label, type);
+      renderBodyField(pair, ...fields[index + 1]);
+      form.append(pair);
+      index += 1;
+    } else {
+      renderBodyField(form, path, label, type);
+    }
   }
 }
 
@@ -387,7 +403,9 @@ function applyBodyForm() {
       ? null
       : input.dataset.valueType === 'number'
         ? Number(raw)
-        : raw;
+        : input.dataset.path === 'qualitative.physique_rating'
+          ? cleanPhysiqueRating(raw) || null
+          : raw;
     setPath(log, input.dataset.path, value);
   }
 

@@ -13,12 +13,12 @@ test('review margin contains original photo outside all four crop edges', () => 
   });
 });
 
-test('one and ten pixel nudges use photo pixels, independently of preview scale', () => {
+test('one and five pixel nudges use photo pixels, independently of preview scale', () => {
   const one = nudgeCorner(portrait, 0, 1, 0, 0, 1000, 1000);
   assert.deepEqual(one[0], { x: 101, y: 100 });
-  const ten = nudgeCorner(one, 0, 0, -10, 0, 1000, 1000);
-  assert.deepEqual(ten[0], { x: 101, y: 90 });
-  assert.deepEqual(ten.slice(1), portrait.slice(1));
+  const five = nudgeCorner(one, 0, 0, -5, 0, 1000, 1000);
+  assert.deepEqual(five[0], { x: 101, y: 95 });
+  assert.deepEqual(five.slice(1), portrait.slice(1));
   assert.deepEqual(portrait[0], { x: 100, y: 100 });
 });
 

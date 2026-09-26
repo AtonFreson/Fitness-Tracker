@@ -1,5 +1,4 @@
 const BUILD = 'tanita-scan-debug-v2';
-const startedAt = new Date();
 const startedPerf = performance.now();
 const entries = [];
 let initialized = false;
@@ -116,57 +115,6 @@ function debugError(event, error, data = null) {
   });
 }
 
-function resourceTimings() {
-  return performance.getEntriesByType('resource')
-    .filter((entry) => /opencv|tanita-scan|jspdf/i.test(entry.name))
-    .map((entry) => ({
-      name: scrubString(entry.name),
-      initiatorType: entry.initiatorType,
-      startTime: Math.round(entry.startTime),
-      duration: Math.round(entry.duration),
-      transferSize: entry.transferSize ?? null,
-      encodedBodySize: entry.encodedBodySize ?? null,
-      decodedBodySize: entry.decodedBodySize ?? null,
-      nextHopProtocol: entry.nextHopProtocol || null,
-    }));
-}
-
-function debugText() {
-  const header = [
-    'TANITA batch scanner diagnostic log',
-    'Generated: ' + new Date().toISOString(),
-    'Session started: ' + startedAt.toISOString(),
-    '',
-    '=== Environment ===',
-    JSON.stringify(environmentSnapshot(), null, 2),
-    '',
-    '=== Relevant resource timings ===',
-    JSON.stringify(resourceTimings(), null, 2),
-    '',
-    '=== Event log ===',
-  ];
-
-  const lines = entries.map((entry) => {
-    const data = entry.data == null ? '' : ' ' + JSON.stringify(entry.data);
-    return '[' + entry.iso + ' +' + entry.elapsedMs + 'ms] ' + entry.event + data;
-  });
-  return [...header, ...lines, ''].join('\n');
-}
-
-function downloadDebugLog() {
-  debugLog('debug-log-download-requested', { entryCount: entries.length });
-  const blob = new Blob([debugText()], { type: 'text/plain;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  anchor.href = url;
-  anchor.download = 'tanita-scanner-debug-' + stamp + '.txt';
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
-}
-
 function initDebugCapture() {
   if (initialized) return;
   initialized = true;
@@ -222,8 +170,6 @@ export {
   BUILD,
   debugLog,
   debugError,
-  debugText,
-  downloadDebugLog,
   initDebugCapture,
   stopDebugHeartbeat,
 };

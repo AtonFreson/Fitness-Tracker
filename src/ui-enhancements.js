@@ -4,7 +4,7 @@ import {
   sortLogViewItems,
   logViewItemVisible,
 } from './record-view.js?v=1';
-import { recoverTextFields, shouldUseRecoveredText } from './text-field-repair.js?v=1';
+import { recoverTextFields, shouldUseRecoveredText } from './text-field-repair.js?v=2';
 
 const $ = (selector) => document.querySelector(selector);
 const VIEW_KEY = 'fitness-tracker-log-view-v1';

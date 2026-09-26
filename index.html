@@ -7,7 +7,7 @@
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>Fitness Tracker</title>
   <link rel="stylesheet" href="./styles.css?v=7">
-  <link rel="stylesheet" href="./enhancements.css?v=1">
+  <link rel="stylesheet" href="./enhancements.css?v=2">
 </head>
 <body>
   <section id="auth-gate" class="vault-gate" aria-live="polite">
@@ -38,7 +38,7 @@
   <div id="app-shell" hidden>
     <header class="site-header">
       <div><p class="eyebrow">GitHub-synced · phone friendly</p><h1>Fitness Tracker</h1><p class="subtitle">Automatic import for TANITA, ACCUNIQ, and Apple Health exports.</p></div>
-      <div class="header-actions"><span id="github-user" class="badge"></span><span id="sync-state" class="badge">Synced</span><button id="signout-github" type="button" class="secondary">Forget token</button></div>
+      <div class="header-actions"><span id="github-user" class="badge"></span><span id="sync-state" class="badge">Synced</span><div class="header-tools"><a id="tanita-scanner-link" class="file-button" href="./tanita-scan.html" target="_blank" rel="noopener" title="Open the receipt scanner in a new tab">Batch scan</a><button id="signout-github" type="button" class="secondary">Forget token</button></div></div>
     </header>
     <main>
       <section class="notice secure-notice"><strong id="repo-visibility">Private repository</strong> · <code id="repo-name"></code>. Logs are stored in monthly JSON files under <code>data/events/</code>.</section>
@@ -47,7 +47,6 @@
         <p>Choose a TANITA or ACCUNIQ report, Apple Health <code>export.xml</code>, or the original Apple Health export ZIP.</p>
         <div class="actions wrap">
           <label id="choose-file-button" class="file-button"><input id="import-file" type="file" accept="application/pdf,image/*,text/xml,application/xml,.xml,.zip,application/zip"><span>Choose data file</span></label>
-          <a id="tanita-scanner-link" class="file-button" href="./tanita-scan.html" target="_blank" rel="noopener" title="Open the receipt scanner in a new tab">Batch-scan TANITA receipts</a>
         </div>
         <span id="detected-source" class="badge detected" hidden></span>
         <p id="import-status" class="status import-status" aria-live="polite"></p>
@@ -86,7 +85,7 @@
     <div id="record-form" class="record-form"></div>
     <div class="dialog-footer"><p id="record-status" class="status" role="status"></p><button id="record-save" type="button">Save changes to GitHub</button></div>
   </dialog>
-  <script type="module" src="./app.js?v=10"></script>
-  <script type="module" src="./src/ui-enhancements.js?v=2"></script>
+  <script type="module" src="./app.js?v=11"></script>
+  <script type="module" src="./src/ui-enhancements.js?v=3"></script>
 </body>
 </html>

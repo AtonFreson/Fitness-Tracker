@@ -51,6 +51,10 @@ function cleanCandidate(value = '') {
   return candidate;
 }
 
+function cleanPhysiqueRating(value = '') {
+  return String(value).replace(/[^\p{L}\s]/gu, '').replace(/\s+/g, ' ').trim();
+}
+
 function bestMatch(text, pattern) {
   const matches = [];
   pattern.lastIndex = 0;
@@ -71,7 +75,13 @@ function recoverTextFields(rawText, sourceHint = '') {
 
   return FIELD_SPECS
     .filter((spec) => source === 'unknown' || spec.source === source)
-    .map((spec) => ({ ...spec, value: bestMatch(text, spec.pattern) }))
+    .map((spec) => {
+      const value = bestMatch(text, spec.pattern);
+      return {
+        ...spec,
+        value: spec.path === 'qualitative.physique_rating' ? cleanPhysiqueRating(value) : value,
+      };
+    })
     .filter((spec) => spec.value);
 }
 
@@ -91,4 +101,4 @@ function shouldUseRecoveredText(currentValue, recoveredValue) {
   return b.includes(a) || recoveredWords > currentWords;
 }
 
-export { recoverTextFields, shouldUseRecoveredText, cleanCandidate };
+export { recoverTextFields, shouldUseRecoveredText, cleanCandidate, cleanPhysiqueRating };

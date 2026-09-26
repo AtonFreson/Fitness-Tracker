@@ -5,6 +5,7 @@ import {
   extractDateCandidates,
   resolveDateFromOcr,
   tanitaPdfFilename,
+  formatTanitaDisplayDate,
 } from '../src/tanita-scan-core.js';
 
 test('normalizes TANITA printed dates', () => {
@@ -43,4 +44,9 @@ test('requires manual confirmation when OCR dates conflict', () => {
 test('creates tracker-compatible filenames', () => {
   assert.equal(tanitaPdfFilename('15/SEP/2026'), '2026-09-15 TANITA.pdf');
   assert.equal(tanitaPdfFilename('2026-09-15', 2), '2026-09-15 TANITA 2.pdf');
+});
+
+test('shows a receipt-style date without changing the PDF filename', () => {
+  assert.equal(formatTanitaDisplayDate('2026-09-13'), '13/Sep/2026');
+  assert.equal(tanitaPdfFilename('2026-09-13'), '2026-09-13 TANITA.pdf');
 });

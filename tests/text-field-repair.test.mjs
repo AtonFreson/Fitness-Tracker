@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { recoverTextFields, shouldUseRecoveredText } from '../src/text-field-repair.js';
+import { recoverTextFields, shouldUseRecoveredText, cleanPhysiqueRating } from '../src/text-field-repair.js';
 
 test('recovers a complete multi-word TANITA physique rating', () => {
   const raw = `--- GOOGLE VISION FULL (SPATIAL) ---\nPHYSIQUE RATING\nHIDDEN OBESE\nBIOELECTRICAL DATA\nR 587.6 521.3`;
@@ -8,6 +8,13 @@ test('recovers a complete multi-word TANITA physique rating', () => {
   assert.equal(fields.find((field) => field.path === 'qualitative.physique_rating')?.value, 'HIDDEN OBESE');
   assert.equal(shouldUseRecoveredText('HIDDEN', 'HIDDEN OBESE'), true);
   assert.equal(shouldUseRecoveredText('OBESE', 'HIDDEN OBESE'), true);
+});
+
+test('removes receipt markers from physique ratings while keeping words apart', () => {
+  const raw = 'PHYSIQUE RATING HIDDEN OBESE * BIOELECTRICAL DATA';
+  const fields = recoverTextFields(raw, 'tanita');
+  assert.equal(fields.find((field) => field.path === 'qualitative.physique_rating')?.value, 'HIDDEN OBESE');
+  assert.equal(cleanPhysiqueRating('  OBESE \\*  '), 'OBESE');
 });
 
 test('keeps previously unencountered TANITA text values intact', () => {

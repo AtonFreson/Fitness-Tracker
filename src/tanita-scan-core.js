@@ -2,6 +2,7 @@ const MONTHS = {
   JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6,
   JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12,
 };
+const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 function cleanDateText(input = '') {
   return String(input)
@@ -106,4 +107,11 @@ function tanitaPdfFilename(date, duplicateIndex = 1) {
   return normalized + suffix;
 }
 
-export { cleanDateText, normalizeTanitaDate, extractDateCandidates, resolveDateFromOcr, tanitaPdfFilename };
+function formatTanitaDisplayDate(date) {
+  const normalized = normalizeTanitaDate(date);
+  if (!normalized) return null;
+  const [year, month, day] = normalized.split('-');
+  return `${day}/${MONTH_LABELS[Number(month) - 1]}/${year}`;
+}
+
+export { cleanDateText, normalizeTanitaDate, extractDateCandidates, resolveDateFromOcr, tanitaPdfFilename, formatTanitaDisplayDate };
