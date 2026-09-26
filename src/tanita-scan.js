@@ -80,9 +80,17 @@ window.addEventListener('tanita-scan-debug-entry', (event) => {
 initDebugCapture();
 debugLog('scanner-controller-loaded', {
   module: 'tanita-scan.js',
-  build: 8,
+  build: 9,
   googleVisionConfigured: Boolean(String(CONFIG.googleVisionApiKey || '').trim()),
 });
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistration('./').then((registration) => {
+    const script = registration?.active?.scriptURL || registration?.waiting?.scriptURL;
+    if (script && new URL(script).pathname.endsWith('/tanita-download-sw.js')) return registration.unregister();
+  }).catch(console.warn);
+}
+if ('caches' in window) caches.delete('tanita-pdf-download-v1').catch(console.warn);
 
 function setStatus(message, kind = '') {
   const node = $('#scan-status');
@@ -227,53 +235,6 @@ function defaultFilenameFor(index) {
   return tanitaPdfFilename(receipt.date, duplicateIndex) || 'TANITA.pdf';
 }
 
-const pdfDownloadCache = 'tanita-pdf-download-v1';
-const downloadWorkerReady = startDownloadWorker().catch((error) => error);
-
-async function startDownloadWorker() {
-  if (!('serviceWorker' in navigator) || !('caches' in window)) {
-    throw new Error('Direct PDF downloads require Safari or another browser with service worker support.');
-  }
-  const registration = await navigator.serviceWorker.register('./tanita-download-sw.js?v=1', { scope: './' });
-  await navigator.serviceWorker.ready;
-  if (navigator.serviceWorker.controller?.scriptURL !== registration.active?.scriptURL) {
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        navigator.serviceWorker.removeEventListener('controllerchange', changed);
-        reject(new Error('The download service did not start. Reload the scanner and try again.'));
-      }, 5000);
-      function changed() {
-        if (navigator.serviceWorker.controller?.scriptURL !== registration.active?.scriptURL) return;
-        clearTimeout(timeout);
-        navigator.serviceWorker.removeEventListener('controllerchange', changed);
-        resolve();
-      }
-      navigator.serviceWorker.addEventListener('controllerchange', changed);
-      changed();
-    });
-  }
-  const cache = await caches.open(pdfDownloadCache);
-  const oldest = Date.now() - 5 * 60 * 1000;
-  await Promise.all((await cache.keys()).map((request) => {
-    const stamp = Number(new URL(request.url).pathname.split('/').pop().split('-')[0]);
-    return Number.isFinite(stamp) && stamp >= oldest ? null : cache.delete(request);
-  }));
-}
-
-function releaseStagedPdf(url) {
-  if (!url) return;
-  caches.open(pdfDownloadCache).then((cache) => cache.delete(url)).catch(console.warn);
-}
-
-async function stagePdfDownload(blob) {
-  const ready = await downloadWorkerReady;
-  if (ready instanceof Error) throw ready;
-  const url = new URL('./tanita-download/' + Date.now() + '-' + crypto.randomUUID(), location.href);
-  const cache = await caches.open(pdfDownloadCache);
-  await cache.put(url.href, new Response(blob, { headers: { 'Content-Type': 'application/pdf' } }));
-  return url.href;
-}
-
 function assignDefaultFilenames() {
   for (let i = 0; i < state.receipts.length; i += 1) {
     state.receipts[i].fileName = defaultFilenameFor(i);
@@ -340,7 +301,6 @@ function renderReceiptCards() {
 }
 
 function resetResults() {
-  for (const receipt of state.receipts) releaseStagedPdf(receipt.downloadUrl);
   state.receipts = [];
   state.reviewIndex = 0;
   $('#source-preview-wrap').hidden = true;
@@ -711,14 +671,17 @@ function createPdfBlob(canvas) {
   return pdf.output('blob');
 }
 
-function downloadPdf(url, fileName) {
+function downloadBlob(blob, fileName) {
+  // WebKit can open application/pdf Blob URLs as a preview even with download.
+  const attachment = new Blob([blob], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(attachment);
   const anchor = document.createElement('a');
-  const downloadUrl = new URL(url);
-  downloadUrl.searchParams.set('filename', fileName);
-  anchor.href = downloadUrl.href;
+  anchor.href = url;
+  anchor.download = fileName;
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 function confirmCurrentReceipt() {
@@ -729,21 +692,15 @@ function confirmCurrentReceipt() {
     $('#review-status').textContent = 'Enter the printed date before downloading.';
     return;
   }
-  if (!receipt.pdfBlob || !receipt.downloadUrl) {
+  if (!receipt.pdfBlob) {
     queuePdfPreparation(receipt, 0);
     return;
   }
 
   setReviewBusy(true);
   try {
-    const enteredName = $('#review-name').value.trim();
-    const name = !enteredName || enteredName === 'TANITA.pdf'
-      ? defaultFilenameFor(state.reviewIndex) : enteredName;
-    receipt.fileName = sanitizePdfName(name);
-    downloadPdf(receipt.downloadUrl, receipt.fileName);
-    const deliveredUrl = receipt.downloadUrl;
-    receipt.downloadUrl = null;
-    setTimeout(() => releaseStagedPdf(deliveredUrl), 60000);
+    receipt.fileName = sanitizePdfName($('#review-name').value);
+    downloadBlob(receipt.pdfBlob, receipt.fileName);
     receipt.pdfBlob = null;
     receipt.downloaded = true;
     setReviewBusy(false);
@@ -774,7 +731,7 @@ function updateDownloadButton() {
   const receipt = state.receipts[state.reviewIndex];
   const button = $('#confirm-download');
   const retry = Boolean(receipt?.pdfError);
-  button.disabled = state.exporting || !receipt?.date || ((!receipt.pdfBlob || !receipt.downloadUrl) && !receipt.pdfError);
+  button.disabled = state.exporting || !receipt?.date || (!receipt.pdfBlob && !receipt.pdfError);
   button.setAttribute('aria-label', retry ? 'Retry PDF' : 'Confirm and download PDF');
   $('.confirm-full').textContent = retry ? 'Retry PDF' : 'Confirm and download PDF';
   $('.confirm-short').textContent = retry ? 'Retry PDF' : 'Download PDF';
@@ -795,20 +752,10 @@ async function prepareReceiptPdf(receipt) {
     if (revision !== receipt.pdfRevision) return;
     const blob = createPdfBlob(canvas);
     if (revision !== receipt.pdfRevision) return;
-    const downloadUrl = await stagePdfDownload(blob);
-    if (!state.receipts.includes(receipt) || revision !== receipt.pdfRevision) {
-      releaseStagedPdf(downloadUrl);
-      return;
-    }
     receipt.canvas = canvas;
     receipt.cropDirty = false;
     receipt.pdfBlob = blob;
-    receipt.downloadUrl = downloadUrl;
     if (reviewingReceipt(receipt)) {
-      if (!receipt.customName) {
-        receipt.fileName = defaultFilenameFor(state.reviewIndex);
-        $('#review-name').value = receipt.fileName;
-      }
       $('#review-status').textContent = '';
       updateDownloadButton();
     }
@@ -833,8 +780,6 @@ function queuePdfPreparation(receipt, delay = 160) {
   receipt.pdfRevision = (receipt.pdfRevision || 0) + 1;
   receipt.pdfBlob = null;
   receipt.pdfError = null;
-  releaseStagedPdf(receipt.downloadUrl);
-  receipt.downloadUrl = null;
   clearTimeout(receipt.prepareTimer);
   if (reviewingReceipt(receipt)) {
     $('#review-status').textContent = 'Preparing PDF...';
