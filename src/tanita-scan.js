@@ -86,6 +86,7 @@ function setStatus(message, kind = '') {
 function setProcessing(busy) {
   for (const input of [$('#camera-input'), $('#photo-input')]) input.disabled = busy;
   $('#start-review').disabled = busy;
+  $('#cancel-scan').hidden = !busy;
   document.body.classList.toggle('scan-busy', busy);
 }
 
@@ -626,6 +627,13 @@ for (const input of [$('#camera-input'), $('#photo-input')]) {
     event.target.value = '';
   });
 }
+
+$('#cancel-scan').addEventListener('click', () => {
+  resetScannerWorker();
+  setDiagnosticStage('Cancelled', 'Ready');
+  setStatus('Scan cancelled. You can choose the photo again.');
+  setProcessing(false);
+});
 
 $('#start-review').addEventListener('click', () => openReview(0));
 $('#review-close').addEventListener('click', closeReview);
