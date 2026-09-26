@@ -1,4 +1,4 @@
-import { debugLog, debugError, cvState } from './tanita-scan-debug.js?v=1';
+import { debugLog, debugError, cvState } from './tanita-scan-debug.js?v=2';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
@@ -115,7 +115,12 @@ async function loadOpenCv() {
       for (const oldScript of document.querySelectorAll('script[data-tanita-opencv]')) {
         oldScript.remove();
       }
-      delete globalThis.cv;
+      try {
+        globalThis.cv = undefined;
+        debugLog('opencv-global-reset', { url, cv: cvState() });
+      } catch (error) {
+        debugError('opencv-global-reset-failed', error, { url, cv: cvState() });
+      }
 
       await loadScript(url);
       debugLog('opencv-script-loaded-awaiting-runtime', { url, cv: cvState() });
