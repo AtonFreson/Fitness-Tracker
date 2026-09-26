@@ -10,16 +10,22 @@ const INIT_TIMEOUT_MS = 30000;
 const SCAN_TIMEOUT_MS = 90000;
 
 let activeWorker = null;
+let initializingWorker = null;
 let activeSource = null;
 let readyPromise = null;
 let nextRequestId = 1;
 const pending = new Map();
 
 function terminateWorker(reason = 'reset') {
+  if (initializingWorker && initializingWorker !== activeWorker) {
+    debugLog('scanner-worker-init-terminated', { reason, source: activeSource });
+    try { initializingWorker.terminate(); } catch {}
+  }
   if (activeWorker) {
     debugLog('scanner-worker-terminated', { reason, source: activeSource });
-    activeWorker.terminate();
+    try { activeWorker.terminate(); } catch {}
   }
+  initializingWorker = null;
   activeWorker = null;
   activeSource = null;
   readyPromise = null;
@@ -110,12 +116,15 @@ function attachWorkerEvents(worker, source, resolveReady, rejectReady) {
 function startWorkerForSource(source) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(WORKER_URL);
+    initializingWorker = worker;
+    activeSource = source;
     let settled = false;
 
     const finishResolve = (value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      initializingWorker = null;
       resolve(value);
     };
 
@@ -123,6 +132,7 @@ function startWorkerForSource(source) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (initializingWorker === worker) initializingWorker = null;
       try { worker.terminate(); } catch {}
       reject(error);
     };
