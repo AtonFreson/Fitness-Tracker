@@ -225,6 +225,301 @@ function detectionCanvas(sourceCanvas, maxDimension = 1600) {
   return { canvas, scale };
 }
 
+function median(values) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function lineFromPoints(a, b) {
+  const length = Math.max(1e-6, distance(a, b));
+  return {
+    point: { x: a.x, y: a.y },
+    direction: { x: (b.x - a.x) / length, y: (b.y - a.y) / length },
+    residual: 0,
+    support: 1,
+    refined: false,
+  };
+}
+
+function fitWeightedLine(samples, roughDirection) {
+  if (samples.length < 20) return null;
+  const strengths = samples.map((sample) => sample.strength);
+  const typicalStrength = Math.max(1, median(strengths));
+  let robustWeights = samples.map(() => 1);
+  let line = null;
+
+  for (let iteration = 0; iteration < 4; iteration += 1) {
+    let totalWeight = 0;
+    let meanX = 0;
+    let meanY = 0;
+
+    for (let i = 0; i < samples.length; i += 1) {
+      const baseWeight = clamp(samples[i].strength / typicalStrength, 0.35, 3);
+      const weight = baseWeight * robustWeights[i];
+      totalWeight += weight;
+      meanX += samples[i].x * weight;
+      meanY += samples[i].y * weight;
+    }
+    if (totalWeight < 1e-6) return null;
+    meanX /= totalWeight;
+    meanY /= totalWeight;
+
+    let sxx = 0;
+    let sxy = 0;
+    let syy = 0;
+    for (let i = 0; i < samples.length; i += 1) {
+      const baseWeight = clamp(samples[i].strength / typicalStrength, 0.35, 3);
+      const weight = baseWeight * robustWeights[i];
+      const dx = samples[i].x - meanX;
+      const dy = samples[i].y - meanY;
+      sxx += weight * dx * dx;
+      sxy += weight * dx * dy;
+      syy += weight * dy * dy;
+    }
+
+    const angle = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+    let direction = { x: Math.cos(angle), y: Math.sin(angle) };
+    if (direction.x * roughDirection.x + direction.y * roughDirection.y < 0) {
+      direction = { x: -direction.x, y: -direction.y };
+    }
+
+    line = {
+      point: { x: meanX, y: meanY },
+      direction,
+      refined: true,
+    };
+
+    const residuals = samples.map((sample) => Math.abs(
+      (sample.x - meanX) * direction.y - (sample.y - meanY) * direction.x,
+    ));
+    const middleResidual = median(residuals);
+    const absoluteDeviations = residuals.map((value) => Math.abs(value - middleResidual));
+    const sigma = Math.max(0.45, 1.4826 * median(absoluteDeviations));
+    const cutoff = Math.max(1.25, middleResidual + 3.25 * sigma);
+
+    robustWeights = residuals.map((value) => {
+      const normalized = value / cutoff;
+      if (normalized >= 1) return 0;
+      const remaining = 1 - normalized * normalized;
+      return remaining * remaining;
+    });
+  }
+
+  if (!line) return null;
+  const alignment = Math.abs(
+    line.direction.x * roughDirection.x + line.direction.y * roughDirection.y,
+  );
+  if (alignment < Math.cos(12 * Math.PI / 180)) return null;
+
+  const residuals = samples.map((sample) => Math.abs(
+    (sample.x - line.point.x) * line.direction.y
+      - (sample.y - line.point.y) * line.direction.x,
+  ));
+  line.residual = median(residuals);
+  line.support = residuals.filter((value) => value <= Math.max(1.5, line.residual * 2.5)).length
+    / samples.length;
+  line.strength = typicalStrength;
+  line.score = line.support * typicalStrength * alignment / (1 + line.residual);
+  return line;
+}
+
+function sampleGray(image, x, y) {
+  const maxX = image.width - 1;
+  const maxY = image.height - 1;
+  const px = clamp(x, 0, maxX);
+  const py = clamp(y, 0, maxY);
+  const x0 = Math.floor(px);
+  const y0 = Math.floor(py);
+  const x1 = Math.min(maxX, x0 + 1);
+  const y1 = Math.min(maxY, y0 + 1);
+  const fx = px - x0;
+  const fy = py - y0;
+  const data = image.data;
+
+  const luminance = (ix, iy) => {
+    const offset = (iy * image.width + ix) * 4;
+    return 0.299 * data[offset] + 0.587 * data[offset + 1] + 0.114 * data[offset + 2];
+  };
+
+  const top = luminance(x0, y0) * (1 - fx) + luminance(x1, y0) * fx;
+  const bottom = luminance(x0, y1) * (1 - fx) + luminance(x1, y1) * fx;
+  return top * (1 - fy) + bottom * fy;
+}
+
+function refineEdgeFromGradient(sourceCanvas, a, b, shortSide) {
+  const length = distance(a, b);
+  if (length < 40) return null;
+
+  const direction = {
+    x: (b.x - a.x) / length,
+    y: (b.y - a.y) / length,
+  };
+  // With TL -> TR -> BR -> BL ordering this normal points into the paper.
+  const normal = { x: -direction.y, y: direction.x };
+  const band = clamp(shortSide * 0.03, 7, 36);
+  const margin = band + 4;
+  const left = clamp(Math.floor(Math.min(a.x, b.x) - margin), 0, sourceCanvas.width - 1);
+  const top = clamp(Math.floor(Math.min(a.y, b.y) - margin), 0, sourceCanvas.height - 1);
+  const right = clamp(Math.ceil(Math.max(a.x, b.x) + margin), left + 1, sourceCanvas.width);
+  const bottom = clamp(Math.ceil(Math.max(a.y, b.y) + margin), top + 1, sourceCanvas.height);
+  const width = right - left;
+  const height = bottom - top;
+  if (width < 2 || height < 2) return null;
+
+  const image = sourceCanvas.getContext('2d', { willReadFrequently: true })
+    .getImageData(left, top, width, height);
+  const sampleCount = clamp(Math.round(length / 4), 90, 700);
+  const positive = [];
+  const negative = [];
+  const minOffset = -Math.floor(band);
+  const maxOffset = Math.floor(band);
+
+  for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+    const t = 0.07 + (sampleIndex / Math.max(1, sampleCount - 1)) * 0.86;
+    const base = {
+      x: a.x + (b.x - a.x) * t,
+      y: a.y + (b.y - a.y) * t,
+    };
+    const profile = [];
+
+    for (let offset = minOffset; offset <= maxOffset; offset += 1) {
+      const minus = sampleGray(
+        image,
+        base.x + normal.x * (offset - 1) - left,
+        base.y + normal.y * (offset - 1) - top,
+      );
+      const plus = sampleGray(
+        image,
+        base.x + normal.x * (offset + 1) - left,
+        base.y + normal.y * (offset + 1) - top,
+      );
+      profile.push(plus - minus);
+    }
+
+    for (const polarity of [1, -1]) {
+      let bestIndex = -1;
+      let bestStrength = -Infinity;
+      for (let i = 1; i < profile.length - 1; i += 1) {
+        const strength = profile[i] * polarity;
+        if (strength > bestStrength) {
+          bestStrength = strength;
+          bestIndex = i;
+        }
+      }
+      if (bestIndex < 1 || bestStrength < 6) continue;
+
+      const previous = profile[bestIndex - 1] * polarity;
+      const center = profile[bestIndex] * polarity;
+      const next = profile[bestIndex + 1] * polarity;
+      const denominator = previous - 2 * center + next;
+      const delta = Math.abs(denominator) > 1e-6
+        ? clamp(0.5 * (previous - next) / denominator, -0.75, 0.75)
+        : 0;
+      const offset = minOffset + bestIndex + delta;
+      const point = {
+        x: base.x + normal.x * offset,
+        y: base.y + normal.y * offset,
+        strength: bestStrength,
+      };
+      (polarity > 0 ? positive : negative).push(point);
+    }
+  }
+
+  const candidates = [
+    fitWeightedLine(positive, direction),
+    fitWeightedLine(negative, direction),
+  ].filter(Boolean);
+  if (!candidates.length) return null;
+
+  candidates.sort((first, second) => second.score - first.score);
+  const best = candidates[0];
+  if (best.support < 0.45 || best.residual > Math.max(2.2, band * 0.22)) return null;
+  return best;
+}
+
+function lineIntersection(first, second) {
+  const denominator = first.direction.x * second.direction.y
+    - first.direction.y * second.direction.x;
+  if (Math.abs(denominator) < 1e-5) return null;
+
+  const dx = second.point.x - first.point.x;
+  const dy = second.point.y - first.point.y;
+  const t = (dx * second.direction.y - dy * second.direction.x) / denominator;
+  return {
+    x: first.point.x + first.direction.x * t,
+    y: first.point.y + first.direction.y * t,
+  };
+}
+
+function isConvexQuad(points) {
+  let sign = 0;
+  for (let i = 0; i < 4; i += 1) {
+    const a = points[i];
+    const b = points[(i + 1) % 4];
+    const c = points[(i + 2) % 4];
+    const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    if (Math.abs(cross) < 1e-6) return false;
+    const current = Math.sign(cross);
+    if (!sign) sign = current;
+    if (current !== sign) return false;
+  }
+  return true;
+}
+
+function refineQuadSubpixel(sourceCanvas, candidate) {
+  const rough = orderQuad(candidate.points);
+  const metrics = quadMetrics(rough);
+  const lines = [];
+  let refinedEdges = 0;
+
+  for (let i = 0; i < 4; i += 1) {
+    const a = rough[i];
+    const b = rough[(i + 1) % 4];
+    const refined = refineEdgeFromGradient(sourceCanvas, a, b, metrics.shortSide);
+    if (refined) refinedEdges += 1;
+    lines.push(refined || lineFromPoints(a, b));
+  }
+
+  if (refinedEdges < 2) return candidate;
+
+  const refinedPoints = [
+    lineIntersection(lines[3], lines[0]),
+    lineIntersection(lines[0], lines[1]),
+    lineIntersection(lines[1], lines[2]),
+    lineIntersection(lines[2], lines[3]),
+  ];
+  if (refinedPoints.some((point) => !point)) return candidate;
+
+  const maxMove = Math.max(12, metrics.shortSide * 0.07);
+  if (refinedPoints.some((point, index) => distance(point, rough[index]) > maxMove)) {
+    return candidate;
+  }
+  if (!isConvexQuad(refinedPoints)) return candidate;
+
+  const refinedMetrics = quadMetrics(refinedPoints);
+  const areaRatio = refinedMetrics.area / Math.max(1, metrics.area);
+  if (areaRatio < 0.78 || areaRatio > 1.22) return candidate;
+  if (refinedMetrics.ratio < 2.6 || refinedMetrics.ratio > 7.7) return candidate;
+
+  const center = refinedPoints.reduce(
+    (acc, point) => ({ x: acc.x + point.x / 4, y: acc.y + point.y / 4 }),
+    { x: 0, y: 0 },
+  );
+
+  return {
+    ...candidate,
+    points: refinedPoints,
+    center,
+    ...refinedMetrics,
+    refinedEdges,
+    subpixelRefined: true,
+  };
+}
+
 function detectReceiptQuads(sourceCanvas, cv) {
   const detection = detectionCanvas(sourceCanvas);
   const src = cv.imread(detection.canvas);
@@ -301,19 +596,25 @@ function detectReceiptQuads(sourceCanvas, cv) {
       cv.RETR_LIST,
     ));
 
-    return dedupeCandidates(candidates).map((candidate) => ({
-      ...candidate,
-      points: candidate.points.map((point) => ({
-        x: point.x / detection.scale,
-        y: point.y / detection.scale,
-      })),
-      center: {
-        x: candidate.center.x / detection.scale,
-        y: candidate.center.y / detection.scale,
-      },
-      shortSide: candidate.shortSide / detection.scale,
-      longSide: candidate.longSide / detection.scale,
-    }));
+    return dedupeCandidates(candidates).map((candidate) => {
+      const fullResolution = {
+        ...candidate,
+        points: candidate.points.map((point) => ({
+          x: point.x / detection.scale,
+          y: point.y / detection.scale,
+        })),
+        center: {
+          x: candidate.center.x / detection.scale,
+          y: candidate.center.y / detection.scale,
+        },
+        width: candidate.width / detection.scale,
+        height: candidate.height / detection.scale,
+        shortSide: candidate.shortSide / detection.scale,
+        longSide: candidate.longSide / detection.scale,
+        area: candidate.area / (detection.scale * detection.scale),
+      };
+      return refineQuadSubpixel(sourceCanvas, fullResolution);
+    });
   } finally {
     src.delete();
     gray.delete();
