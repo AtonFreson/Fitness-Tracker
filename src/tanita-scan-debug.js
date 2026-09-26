@@ -1,4 +1,4 @@
-const BUILD = 'tanita-scan-debug-v1';
+const BUILD = 'tanita-scan-debug-v2';
 const startedAt = new Date();
 const startedPerf = performance.now();
 const entries = [];
@@ -37,18 +37,6 @@ function serialize(value, depth = 0) {
     return output;
   }
   return scrubString(value);
-}
-
-function cvState() {
-  const cv = globalThis.cv;
-  return {
-    type: typeof cv,
-    present: Boolean(cv),
-    thenable: Boolean(cv && typeof cv.then === 'function'),
-    hasMat: Boolean(cv?.Mat),
-    hasImread: Boolean(cv?.imread),
-    hasRuntimeInitializedFlag: cv?.runtimeInitialized ?? null,
-  };
 }
 
 function environmentSnapshot() {
@@ -93,7 +81,12 @@ function environmentSnapshot() {
       totalJSHeapSize: memory.totalJSHeapSize,
       usedJSHeapSize: memory.usedJSHeapSize,
     } : null,
-    cv: cvState(),
+    capabilities: {
+      worker: typeof Worker !== 'undefined',
+      createImageBitmap: typeof createImageBitmap === 'function',
+      offscreenCanvasMainThread: typeof OffscreenCanvas !== 'undefined',
+      imageData: typeof ImageData !== 'undefined',
+    },
   };
 }
 
@@ -216,7 +209,6 @@ function initDebugCapture() {
       gapMs,
       visibility: document.visibilityState,
       online: navigator.onLine,
-      cv: cvState(),
     });
   }, 5000);
 }
@@ -234,5 +226,4 @@ export {
   downloadDebugLog,
   initDebugCapture,
   stopDebugHeartbeat,
-  cvState,
 };
