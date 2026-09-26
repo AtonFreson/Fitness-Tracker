@@ -89,6 +89,18 @@ function setProcessing(busy) {
   document.body.classList.toggle('scan-busy', busy);
 }
 
+function withDeadline(promise, timeoutMs, label) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(label + ' timed out after ' + Math.round(timeoutMs / 1000) + ' seconds.'));
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 function resizeCanvas(source, maxWidth) {
   if (source.width <= maxWidth) return source;
   const canvas = document.createElement('canvas');
@@ -313,7 +325,11 @@ async function processPhoto(file) {
     setDiagnosticStage('Loading OpenCV', 'Working');
     setStatus('Loading receipt detector...');
     const detectorStarted = performance.now();
-    state.cv = state.cv || await waitForOpenCv();
+    state.cv = state.cv || await withDeadline(
+      waitForOpenCv(),
+      65000,
+      'Receipt detector loading',
+    );
     debugLog('opencv-ready-in-controller', {
       elapsedMs: Math.round(performance.now() - detectorStarted),
       hasMat: Boolean(state.cv?.Mat),
