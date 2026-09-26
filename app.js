@@ -35,6 +35,17 @@ import {
 
 const $ = (selector) => document.querySelector(selector);
 
+const scannerLink = $('#tanita-scanner-link');
+if (navigator.standalone === true) {
+  scannerLink.title = 'Open the receipt scanner in Safari';
+  scannerLink.addEventListener('click', (event) => {
+    const scannerUrl = new URL(scannerLink.href);
+    if (scannerUrl.protocol !== 'https:') return;
+    event.preventDefault();
+    window.location.assign('x-safari-' + scannerUrl.href);
+  });
+}
+
 let pendingBodyLog = null;
 let pendingHealthLogs = [];
 let signedInUser = null;
