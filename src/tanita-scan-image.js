@@ -1,18 +1,113 @@
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
-async function waitForOpenCv(timeoutMs = 25000) {
-  const started = performance.now();
-  while (performance.now() - started < timeoutMs) {
-    if (window.cv) {
-      try {
-        const candidate = typeof window.cv.then === 'function' ? await window.cv : window.cv;
-        if (candidate && candidate.Mat && candidate.imread) return candidate;
-      } catch {}
+const OPENCV_SOURCES = [
+  'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js',
+  'https://docs.opencv.org/4.x/opencv.js',
+];
+
+let openCvLoadPromise = null;
+
+function timeoutPromise(ms, message) {
+  return new Promise((_, reject) => {
+    setTimeout(() => reject(new Error(message)), ms);
+  });
+}
+
+async function unwrapOpenCvCandidate(candidate, timeoutMs) {
+  if (!candidate) return null;
+  if (typeof candidate.then === 'function') {
+    try {
+      const resolved = await Promise.race([
+        candidate,
+        timeoutPromise(timeoutMs, 'OpenCV runtime initialization timed out.'),
+      ]);
+      return resolved?.Mat && resolved?.imread ? resolved : null;
+    } catch {
+      return null;
     }
-    await sleep(60);
   }
-  throw new Error('The receipt detector could not load. Reload the page and try again.');
+  return candidate?.Mat && candidate?.imread ? candidate : null;
+}
+
+async function waitForOpenCvRuntime(timeoutMs = 12000) {
+  const started = performance.now();
+
+  while (performance.now() - started < timeoutMs) {
+    const candidate = await unwrapOpenCvCandidate(
+      globalThis.cv,
+      Math.max(500, timeoutMs - (performance.now() - started)),
+    );
+    if (candidate) {
+      globalThis.cv = candidate;
+      return candidate;
+    }
+    await sleep(50);
+  }
+  return null;
+}
+
+function loadScript(url, timeoutMs = 12000) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    const timer = setTimeout(() => {
+      script.remove();
+      reject(new Error('Timed out loading ' + url));
+    }, timeoutMs);
+
+    script.async = true;
+    script.src = url;
+    script.dataset.tanitaOpenCv = 'true';
+
+    script.onload = () => {
+      clearTimeout(timer);
+      resolve(script);
+    };
+    script.onerror = () => {
+      clearTimeout(timer);
+      script.remove();
+      reject(new Error('Failed to load ' + url));
+    };
+
+    document.head.append(script);
+  });
+}
+
+async function loadOpenCv() {
+  const alreadyReady = await waitForOpenCvRuntime(250);
+  if (alreadyReady) return alreadyReady;
+
+  let lastError = null;
+  for (const url of OPENCV_SOURCES) {
+    try {
+      for (const oldScript of document.querySelectorAll('script[data-tanita-opencv]')) {
+        oldScript.remove();
+      }
+      delete globalThis.cv;
+
+      await loadScript(url);
+      const ready = await waitForOpenCvRuntime(15000);
+      if (ready) return ready;
+      lastError = new Error('OpenCV loaded but its runtime did not initialize.');
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw new Error(
+    'The receipt detector could not load. '
+    + (lastError?.message ? lastError.message : 'Both OpenCV sources failed.'),
+  );
+}
+
+async function waitForOpenCv() {
+  if (!openCvLoadPromise) {
+    openCvLoadPromise = loadOpenCv().catch((error) => {
+      openCvLoadPromise = null;
+      throw error;
+    });
+  }
+  return openCvLoadPromise;
 }
 
 function loadImage(url) {
