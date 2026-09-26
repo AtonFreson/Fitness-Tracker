@@ -5,7 +5,7 @@ import {
   debugText,
   downloadDebugLog,
   initDebugCapture,
-} from './tanita-scan-debug.js?v=1';
+} from './tanita-scan-debug.js?v=2';
 import { normalizeTanitaDate, resolveDateFromOcr, tanitaPdfFilename } from './tanita-scan-core.js';
 import {
   waitForOpenCv,
@@ -15,7 +15,7 @@ import {
   rotateCanvas180,
   cropCanvas,
   copyCanvas,
-} from './tanita-scan-image.js?v=3';
+} from './tanita-scan-image.js?v=4';
 
 const $ = (selector) => document.querySelector(selector);
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
