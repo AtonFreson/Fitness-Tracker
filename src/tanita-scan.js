@@ -16,7 +16,7 @@ import {
 import {
   scanReceiptsInWorker,
   resetScannerWorker,
-} from './tanita-scan-worker-client.js?v=1';
+} from './tanita-scan-worker-client.js?v=2';
 
 const $ = (selector) => document.querySelector(selector);
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
