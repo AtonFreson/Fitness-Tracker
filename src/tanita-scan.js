@@ -8,20 +8,20 @@ import {
 } from './tanita-scan-debug.js?v=2';
 import { normalizeTanitaDate, resolveDateFromOcr, tanitaPdfFilename } from './tanita-scan-core.js';
 import {
-  waitForOpenCv,
   imageFileToCanvas,
-  detectReceiptQuads,
-  warpReceiptCanvases,
   rotateCanvas180,
   cropCanvas,
   copyCanvas,
 } from './tanita-scan-image.js?v=4';
+import {
+  scanReceiptsInWorker,
+  resetScannerWorker,
+} from './tanita-scan-worker-client.js?v=1';
 
 const $ = (selector) => document.querySelector(selector);
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
 const state = {
-  cv: null,
   sourceCanvas: null,
   receipts: [],
   reviewIndex: 0,
@@ -72,7 +72,7 @@ window.addEventListener('tanita-scan-debug-entry', (event) => {
 initDebugCapture();
 debugLog('scanner-controller-loaded', {
   module: 'tanita-scan.js',
-  build: 3,
+  build: 4,
   googleVisionConfigured: Boolean(String(CONFIG.googleVisionApiKey || '').trim()),
 });
 
@@ -87,18 +87,6 @@ function setProcessing(busy) {
   for (const input of [$('#camera-input'), $('#photo-input')]) input.disabled = busy;
   $('#start-review').disabled = busy;
   document.body.classList.toggle('scan-busy', busy);
-}
-
-function withDeadline(promise, timeoutMs, label) {
-  let timer = null;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => {
-      reject(new Error(label + ' timed out after ' + Math.round(timeoutMs / 1000) + ' seconds.'));
-    }, timeoutMs);
-  });
-  return Promise.race([promise, timeout]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
 }
 
 function resizeCanvas(source, maxWidth) {
@@ -322,27 +310,38 @@ async function processPhoto(file) {
       pixels: state.sourceCanvas.width * state.sourceCanvas.height,
     });
 
-    setDiagnosticStage('Loading OpenCV', 'Working');
-    setStatus('Loading receipt detector...');
+    setDiagnosticStage('Starting background detector', 'Working');
+    setStatus('Starting receipt detector in background...');
+
     const detectorStarted = performance.now();
-    state.cv = state.cv || await withDeadline(
-      waitForOpenCv(),
-      65000,
-      'Receipt detector loading',
-    );
-    debugLog('opencv-ready-in-controller', {
-      elapsedMs: Math.round(performance.now() - detectorStarted),
-      hasMat: Boolean(state.cv?.Mat),
-      hasImread: Boolean(state.cv?.imread),
+    const scanResult = await scanReceiptsInWorker(state.sourceCanvas, {
+      onStage(stage) {
+        if (stage.phase === 'loading-detector') {
+          setDiagnosticStage('Loading detector in background', 'Working');
+          setStatus(
+            'Loading receipt detector in background'
+            + (stage.sourceCount > 1 ? ' (' + stage.sourceIndex + '/' + stage.sourceCount + ')' : '')
+            + '...',
+          );
+        } else if (stage.phase === 'transferring-photo') {
+          setDiagnosticStage('Sending photo to detector', 'Working');
+          setStatus('Sending photo to background detector...');
+        } else if (stage.phase === 'detecting') {
+          setDiagnosticStage('Finding corners in background', 'Working');
+          setStatus('Finding receipt corners in background...');
+        } else if (stage.phase === 'receiving-results') {
+          setDiagnosticStage('Receiving scan results', 'Working');
+          setStatus('Preparing detected receipts...');
+        }
+      },
     });
 
-    setDiagnosticStage('Finding corners', 'Working');
-    setStatus('Finding receipt corners...');
-    const detectionStarted = performance.now();
-    const quads = detectReceiptQuads(state.sourceCanvas, state.cv);
-    debugLog('receipt-corners-detected', {
-      elapsedMs: Math.round(performance.now() - detectionStarted),
+    const quads = scanResult.quads;
+    const canvases = scanResult.canvases;
+    debugLog('background-scan-finished', {
+      elapsedMs: Math.round(performance.now() - detectorStarted),
       count: quads.length,
+      source: scanResult.source,
       quads: quads.map((quad) => ({
         method: quad.method,
         subpixelRefined: Boolean(quad.subpixelRefined),
@@ -361,7 +360,6 @@ async function processPhoto(file) {
     }
 
     renderSourcePreview(quads);
-    const canvases = warpReceiptCanvases(state.sourceCanvas, quads, state.cv);
     state.receipts = canvases.map((canvas, index) => ({
       id: index + 1,
       canvas,
@@ -614,6 +612,7 @@ function rotateCurrentReceipt() {
 function resetScanner() {
   closeReview();
   resetResults();
+  resetScannerWorker();
   state.sourceCanvas = null;
   $('#camera-input').value = '';
   $('#photo-input').value = '';
