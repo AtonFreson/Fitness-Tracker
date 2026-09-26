@@ -1,4 +1,4 @@
-import { debugLog, debugError } from './tanita-scan-debug.js?v=2';
+import { debugLog, debugError } from './tanita-scan-debug.js?v=3';
 
 const WORKER_URL = './src/tanita-scan-worker.js?v=3';
 const INIT_TIMEOUT_MS = 5000;
