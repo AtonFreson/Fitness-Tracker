@@ -895,13 +895,6 @@ function warpImageData(source, localQuad) {
 async function refineAndWarpReceipt(originalBitmap, roughQuad, index) {
   const bounds = cropBounds(roughQuad.points, originalBitmap.width, originalBitmap.height);
   const cropStarted = performance.now();
-  const cropBitmap = await createImageBitmap(
-    originalBitmap,
-    bounds.left,
-    bounds.top,
-    bounds.width,
-    bounds.height,
-  );
 
   const cropCanvas = new OffscreenCanvas(bounds.width, bounds.height);
   const cropContext = cropCanvas.getContext('2d', {
@@ -910,8 +903,19 @@ async function refineAndWarpReceipt(originalBitmap, roughQuad, index) {
   });
   if (!cropContext) throw new Error('Could not create receipt crop canvas.');
 
-  cropContext.drawImage(cropBitmap, 0, 0);
-  cropBitmap.close?.();
+  cropContext.fillStyle = '#fff';
+  cropContext.fillRect(0, 0, bounds.width, bounds.height);
+  cropContext.drawImage(
+    originalBitmap,
+    bounds.left,
+    bounds.top,
+    bounds.width,
+    bounds.height,
+    0,
+    0,
+    bounds.width,
+    bounds.height,
+  );
   const image = cropContext.getImageData(0, 0, bounds.width, bounds.height);
   const localRough = roughQuad.points.map((point) => ({
     x: point.x - bounds.left,
@@ -968,10 +972,6 @@ async function scanImage(bitmap) {
   if (typeof OffscreenCanvas === 'undefined') {
     throw new Error('This Safari version does not expose OffscreenCanvas inside workers.');
   }
-  if (typeof createImageBitmap !== 'function') {
-    throw new Error('This Safari version does not expose createImageBitmap inside workers.');
-  }
-
   const started = performance.now();
   const maximumDetectionDimension = 2000;
   const scale = Math.min(
@@ -1053,7 +1053,6 @@ self.onmessage = async (event) => {
     if (message.type === 'init') {
       postLog('worker-built-in-detector-init', {
         offscreenCanvas: typeof OffscreenCanvas !== 'undefined',
-        createImageBitmap: typeof createImageBitmap === 'function',
         imageData: typeof ImageData !== 'undefined',
       });
       postMessage({ type: 'ready', engine: 'built-in-js' });
