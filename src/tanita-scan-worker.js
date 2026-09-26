@@ -937,15 +937,11 @@ async function refineAndWarpReceipt(originalBitmap, roughQuad, index) {
 
   const warpStarted = performance.now();
   const warped = warpImageData(image, refinement.points);
-  const outputCanvas = new OffscreenCanvas(warped.width, warped.height);
-  const outputContext = outputCanvas.getContext('2d', { alpha: false });
-  outputContext.putImageData(warped, 0, 0);
-  const outputBitmap = outputCanvas.transferToImageBitmap();
 
   postLog('worker-receipt-warped', {
     index,
-    width: outputBitmap.width,
-    height: outputBitmap.height,
+    width: warped.width,
+    height: warped.height,
     elapsedMs: Math.round(performance.now() - warpStarted),
   });
 
@@ -964,7 +960,11 @@ async function refineAndWarpReceipt(originalBitmap, roughQuad, index) {
       refinedEdges: refinement.refinedEdges,
       subpixelRefined: refinement.subpixelRefined,
     },
-    bitmap: outputBitmap,
+    pixels: {
+      width: warped.width,
+      height: warped.height,
+      buffer: warped.data.buffer,
+    },
   };
 }
 
@@ -1042,7 +1042,7 @@ async function scanImage(bitmap) {
 
   return {
     quads: results.map((result) => result.quad),
-    bitmaps: results.map((result) => result.bitmap),
+    pixels: results.map((result) => result.pixels),
   };
 }
 
@@ -1061,13 +1061,14 @@ self.onmessage = async (event) => {
 
     if (message.type === 'scan') {
       const result = await scanImage(message.bitmap);
+      const transfers = result.pixels.map((item) => item.buffer);
       postMessage({
         type: 'scan-result',
         requestId: message.requestId,
         quads: result.quads,
-        receipts: result.bitmaps,
+        receipts: result.pixels,
         engine: 'built-in-js',
-      }, result.bitmaps);
+      }, transfers);
     }
   } catch (error) {
     postError(error, {
