@@ -5,18 +5,18 @@ import {
   debugText,
   downloadDebugLog,
   initDebugCapture,
-} from './tanita-scan-debug.js?v=2';
+} from './tanita-scan-debug.js?v=3';
 import { normalizeTanitaDate, resolveDateFromOcr, tanitaPdfFilename } from './tanita-scan-core.js';
 import {
   imageFileToCanvas,
   rotateCanvas180,
   cropCanvas,
   copyCanvas,
-} from './tanita-scan-image.js?v=4';
+} from './tanita-scan-image.js?v=5';
 import {
   scanReceiptsInWorker,
   resetScannerWorker,
-} from './tanita-scan-worker-client.js?v=2';
+} from './tanita-scan-worker-client.js?v=3';
 
 const $ = (selector) => document.querySelector(selector);
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -73,7 +73,7 @@ window.addEventListener('tanita-scan-debug-entry', (event) => {
 initDebugCapture();
 debugLog('scanner-controller-loaded', {
   module: 'tanita-scan.js',
-  build: 4,
+  build: 5,
   googleVisionConfigured: Boolean(String(CONFIG.googleVisionApiKey || '').trim()),
 });
 
