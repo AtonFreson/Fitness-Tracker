@@ -39,16 +39,18 @@ function polygonArea(points) {
 }
 
 function orderQuad(points) {
-  const values = points.map((point) => ({
-    point,
-    sum: point.x + point.y,
-    diff: point.x - point.y,
-  }));
-  const tl = values.reduce((best, item) => item.sum < best.sum ? item : best).point;
-  const br = values.reduce((best, item) => item.sum > best.sum ? item : best).point;
-  const tr = values.reduce((best, item) => item.diff > best.diff ? item : best).point;
-  const bl = values.reduce((best, item) => item.diff < best.diff ? item : best).point;
-  return [tl, tr, br, bl];
+  const center = points.reduce((sum, point) => ({
+    x: sum.x + point.x / points.length,
+    y: sum.y + point.y / points.length,
+  }), { x: 0, y: 0 });
+  const ordered = [...points].sort((a, b) =>
+    Math.atan2(a.y - center.y, a.x - center.x)
+      - Math.atan2(b.y - center.y, b.x - center.x));
+  let first = 0;
+  for (let i = 1; i < ordered.length; i += 1) {
+    if (ordered[i].x + ordered[i].y < ordered[first].x + ordered[first].y) first = i;
+  }
+  return ordered.slice(first).concat(ordered.slice(0, first));
 }
 
 function quadMetrics(points) {
@@ -202,6 +204,48 @@ function robustLineFit(xs, ys) {
   };
 }
 
+function fitBoundaryEnvelope(queue, size, imageWidth, frame, low, high, bins, across) {
+  const minima = new Float64Array(bins).fill(Infinity);
+  const maxima = new Float64Array(bins).fill(-Infinity);
+  const minimumPositions = new Float64Array(bins);
+  const maximumPositions = new Float64Array(bins);
+  const counts = new Uint32Array(bins);
+  const { centerX, centerY, ux, uy, vx, vy } = frame;
+  for (let i = 0; i < size; i += 1) {
+    const index = queue[i];
+    const dx = index % imageWidth - centerX;
+    const dy = Math.floor(index / imageWidth) - centerY;
+    const u = dx * ux + dy * uy;
+    const v = dx * vx + dy * vy;
+    const position = across ? v : u;
+    const value = across ? u : v;
+    const bin = Math.floor((position - low) / (high - low) * bins);
+    if (bin < 0 || bin >= bins) continue;
+    counts[bin] += 1;
+    if (value < minima[bin]) {
+      minima[bin] = value;
+      minimumPositions[bin] = position;
+    }
+    if (value > maxima[bin]) {
+      maxima[bin] = value;
+      maximumPositions[bin] = position;
+    }
+  }
+
+  const firstX = [];
+  const firstY = [];
+  const secondX = [];
+  const secondY = [];
+  for (let bin = 0; bin < bins; bin += 1) {
+    if (counts[bin] < 25) continue;
+    firstX.push(minimumPositions[bin]);
+    firstY.push(minima[bin]);
+    secondX.push(maximumPositions[bin]);
+    secondY.push(maxima[bin]);
+  }
+  return [robustLineFit(firstX, firstY), robustLineFit(secondX, secondY)];
+}
+
 function fitComponentQuad(queue, size, imageWidth, imageHeight) {
   const sampleCount = Math.min(size, 60000);
   if (sampleCount < 250) return null;
@@ -277,39 +321,15 @@ function fitComponentQuad(queue, size, imageWidth, imageHeight) {
   const uHigh = quantile(projectedU, 0.98);
   if (!(uHigh > uLow)) return null;
 
-  const longBins = 64;
-  const vBins = Array.from({ length: longBins }, () => []);
-  for (let i = 0; i < sampleCount; i += 1) {
-    const normalized = (projectedU[i] - uLow) / (uHigh - uLow);
-    const bin = Math.floor(normalized * longBins);
-    if (bin >= 0 && bin < longBins) vBins[bin].push(projectedV[i]);
-  }
-
-  const uCenters = [];
-  const leftEdges = [];
-  const rightEdges = [];
-
-  for (let bin = 0; bin < longBins; bin += 1) {
-    const values = vBins[bin];
-    if (values.length < 25) continue;
-
-    const p15 = quantile(values, 0.15);
-    const p50 = quantile(values, 0.50);
-    const p85 = quantile(values, 0.85);
-    const estimatedWidth = (p85 - p15) / 0.70;
-    if (!(estimatedWidth > 3)) continue;
-
-    uCenters.push(uLow + (uHigh - uLow) * (bin + 0.5) / longBins);
-    leftEdges.push(p50 - estimatedWidth / 2);
-    rightEdges.push(p50 + estimatedWidth / 2);
-  }
-
-  const leftLine = robustLineFit(uCenters, leftEdges);
-  const rightLine = robustLineFit(uCenters, rightEdges);
+  // Fit the actual paper boundary. Interior ink changes pixel density, but
+  // cannot move these envelopes. Robust fitting rejects local tabs and tears.
+  const frame = { centerX, centerY, ux, uy, vx, vy };
+  const [leftLine, rightLine] = fitBoundaryEnvelope(
+    queue, size, imageWidth, frame, uLow, uHigh, 80, false,
+  );
   if (!leftLine || !rightLine) return null;
 
-  const insideU = [];
-  const insideV = [];
+  let insideCount = 0;
   const widths = [];
 
   for (let i = 0; i < sampleCount; i += 1) {
@@ -321,48 +341,27 @@ function fitComponentQuad(queue, size, imageWidth, imageHeight) {
     const high = Math.max(first, second);
     widths.push(high - low);
     if (v >= low && v <= high) {
-      insideU.push(u);
-      insideV.push(v);
+      insideCount += 1;
     }
   }
 
-  if (insideU.length < sampleCount * 0.35) return null;
+  if (insideCount < sampleCount * 0.35) return null;
   const typicalWidth = median(widths.filter((value) => value > 0));
   if (!(typicalWidth > 5)) return null;
 
-  const vLow = quantile(insideV, 0.03);
-  const vHigh = quantile(insideV, 0.97);
+  // Stay inside both long edges at both ends, including perspective taper.
+  const vLow = Math.max(
+    leftLine.slope * uLow + leftLine.intercept,
+    leftLine.slope * uHigh + leftLine.intercept,
+  ) + typicalWidth * 0.06;
+  const vHigh = Math.min(
+    rightLine.slope * uLow + rightLine.intercept,
+    rightLine.slope * uHigh + rightLine.intercept,
+  ) - typicalWidth * 0.06;
   if (!(vHigh > vLow)) return null;
-
-  const acrossBins = 24;
-  const uBins = Array.from({ length: acrossBins }, () => []);
-  for (let i = 0; i < insideU.length; i += 1) {
-    const normalized = (insideV[i] - vLow) / (vHigh - vLow);
-    const bin = Math.floor(normalized * acrossBins);
-    if (bin >= 0 && bin < acrossBins) uBins[bin].push(insideU[i]);
-  }
-
-  const vCenters = [];
-  const startEdges = [];
-  const endEdges = [];
-
-  for (let bin = 0; bin < acrossBins; bin += 1) {
-    const values = uBins[bin];
-    if (values.length < 25) continue;
-
-    const p05 = quantile(values, 0.05);
-    const p50 = quantile(values, 0.50);
-    const p95 = quantile(values, 0.95);
-    const estimatedLength = (p95 - p05) / 0.90;
-    if (!(estimatedLength > typicalWidth * 2)) continue;
-
-    vCenters.push(vLow + (vHigh - vLow) * (bin + 0.5) / acrossBins);
-    startEdges.push(p50 - estimatedLength / 2);
-    endEdges.push(p50 + estimatedLength / 2);
-  }
-
-  const startLine = robustLineFit(vCenters, startEdges);
-  const endLine = robustLineFit(vCenters, endEdges);
+  const [startLine, endLine] = fitBoundaryEnvelope(
+    queue, size, imageWidth, frame, vLow, vHigh, 48, true,
+  );
   if (!startLine || !endLine) return null;
 
   function intersectSideAndEnd(sideLine, endFit) {
@@ -566,7 +565,6 @@ function fitWeightedGeometricLine(samples, roughDirection) {
   line.support = residuals.filter(
     (value) => value <= Math.max(1.5, line.residual * 2.5),
   ).length / samples.length;
-  line.score = line.support * typicalStrength * alignment / (1 + line.residual);
   return line;
 }
 
@@ -604,10 +602,10 @@ function refineEdgeFromGradient(image, a, b, shortSide) {
   const normal = { x: -direction.y, y: direction.x };
   const band = clamp(shortSide * 0.03, 7, 42);
   const sampleCount = clamp(Math.round(length / 5), 80, 650);
-  const positive = [];
-  const negative = [];
+  const samples = [];
   const minOffset = -Math.floor(band);
   const maxOffset = Math.floor(band);
+  const probe = Math.max(4, band * 1.5);
 
   for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
     const t = 0.06 + (sampleIndex / Math.max(1, sampleCount - 1)) * 0.88;
@@ -629,44 +627,51 @@ function refineEdgeFromGradient(image, a, b, shortSide) {
       profile.push(plus - minus);
     }
 
-    for (const polarity of [1, -1]) {
-      let bestIndex = -1;
-      let bestStrength = -Infinity;
+    let bestIndex = -1;
+    let bestStrength = -Infinity;
+    let bestScore = -Infinity;
 
-      for (let i = 1; i < profile.length - 1; i += 1) {
-        const strength = profile[i] * polarity;
-        if (strength > bestStrength) {
-          bestStrength = strength;
-          bestIndex = i;
-        }
+    // Quads run clockwise, so this normal points from the background into
+    // paper. A dark printed rule has the opposite transition at its outer edge.
+    for (let i = 1; i < profile.length - 1; i += 1) {
+      const strength = profile[i];
+      if (strength < 6) continue;
+      const offset = minOffset + i;
+      const outside = sampleGray(
+        image, baseX + normal.x * (offset - probe), baseY + normal.y * (offset - probe),
+      );
+      const inside = sampleGray(
+        image, baseX + normal.x * (offset + probe), baseY + normal.y * (offset + probe),
+      );
+      if (inside - outside < 12) continue;
+      // Prefer the fitted boundary when nearby ink has a stronger gradient.
+      const normalizedOffset = offset / Math.max(2, band * 0.2);
+      const score = strength / (1 + normalizedOffset * normalizedOffset);
+      if (score > bestScore) {
+        bestStrength = strength;
+        bestScore = score;
+        bestIndex = i;
       }
-      if (bestIndex < 1 || bestStrength < 6) continue;
-
-      const previous = profile[bestIndex - 1] * polarity;
-      const center = profile[bestIndex] * polarity;
-      const next = profile[bestIndex + 1] * polarity;
-      const denominator = previous - 2 * center + next;
-      const delta = Math.abs(denominator) > 1e-6
-        ? clamp(0.5 * (previous - next) / denominator, -0.75, 0.75)
-        : 0;
-      const edgeOffset = minOffset + bestIndex + delta;
-      const point = {
-        x: baseX + normal.x * edgeOffset,
-        y: baseY + normal.y * edgeOffset,
-        strength: bestStrength,
-      };
-      (polarity > 0 ? positive : negative).push(point);
     }
+    if (bestIndex < 1) continue;
+
+    const previous = profile[bestIndex - 1];
+    const center = profile[bestIndex];
+    const next = profile[bestIndex + 1];
+    const denominator = previous - 2 * center + next;
+    const delta = Math.abs(denominator) > 1e-6
+      ? clamp(0.5 * (previous - next) / denominator, -0.75, 0.75)
+      : 0;
+    const edgeOffset = minOffset + bestIndex + delta;
+    samples.push({
+      x: baseX + normal.x * edgeOffset,
+      y: baseY + normal.y * edgeOffset,
+      strength: bestStrength,
+    });
   }
 
-  const lines = [
-    fitWeightedGeometricLine(positive, direction),
-    fitWeightedGeometricLine(negative, direction),
-  ].filter(Boolean);
-  if (!lines.length) return null;
-
-  lines.sort((first, second) => second.score - first.score);
-  const best = lines[0];
+  const best = fitWeightedGeometricLine(samples, direction);
+  if (!best) return null;
   if (best.support < 0.45 || best.residual > Math.max(2.4, band * 0.22)) return null;
   return best;
 }
@@ -812,8 +817,8 @@ function squareToQuad(points) {
   };
 }
 
-function warpImageData(source, localQuad) {
-  const ordered = orderQuad(localQuad);
+function warpImageData(source, localQuad, { preserveOrder = false } = {}) {
+  const ordered = preserveOrder ? localQuad : orderQuad(localQuad);
   const [tl, tr, br, bl] = ordered;
   const measuredWidth = Math.max(distance(tl, tr), distance(bl, br));
   const measuredHeight = Math.max(distance(tl, bl), distance(tr, br));
@@ -825,7 +830,7 @@ function warpImageData(source, localQuad) {
   let outputHeight;
   let mappingPoints;
 
-  if (measuredWidth <= measuredHeight) {
+  if (preserveOrder || measuredWidth <= measuredHeight) {
     outputWidth = Math.max(2, Math.round(measuredWidth * outputScale));
     outputHeight = Math.max(2, Math.round(measuredHeight * outputScale));
     mappingPoints = [tl, tr, br, bl];
@@ -892,10 +897,8 @@ function warpImageData(source, localQuad) {
   return destination;
 }
 
-async function refineAndWarpReceipt(originalBitmap, roughQuad, index) {
-  const bounds = cropBounds(roughQuad.points, originalBitmap.width, originalBitmap.height);
-  const cropStarted = performance.now();
-
+function readReceiptCrop(originalBitmap, points) {
+  const bounds = cropBounds(points, originalBitmap.width, originalBitmap.height);
   const cropCanvas = new OffscreenCanvas(bounds.width, bounds.height);
   const cropContext = cropCanvas.getContext('2d', {
     alpha: false,
@@ -917,15 +920,38 @@ async function refineAndWarpReceipt(originalBitmap, roughQuad, index) {
     bounds.height,
   );
   const image = cropContext.getImageData(0, 0, bounds.width, bounds.height);
-  const localRough = roughQuad.points.map((point) => ({
+  const localPoints = points.map((point) => ({
     x: point.x - bounds.left,
     y: point.y - bounds.top,
   }));
+  return { image, localPoints, bounds };
+}
+
+async function warpReceipt(bitmap, points) {
+  if (!Array.isArray(points) || points.length !== 4
+    || points.some((point) => !Number.isFinite(point?.x) || !Number.isFinite(point?.y)
+      || point.x < 0 || point.x > bitmap.width - 1
+      || point.y < 0 || point.y > bitmap.height - 1)
+    || !isConvexQuad(points) || polygonArea(points) < 4) {
+    throw new Error('Receipt corners must form a valid quadrilateral inside the photo.');
+  }
+  const { image, localPoints } = readReceiptCrop(bitmap, points);
+  const warped = warpImageData(image, localPoints, { preserveOrder: true });
+  return { width: warped.width, height: warped.height, buffer: warped.data.buffer };
+}
+
+async function refineAndWarpReceipt(originalBitmap, roughQuad, index) {
+  const cropStarted = performance.now();
+  const { image, localPoints: localRough, bounds } = readReceiptCrop(originalBitmap, roughQuad.points);
 
   const refinement = refineQuadSubpixel(image, localRough);
   const refinedGlobal = refinement.points.map((point) => ({
-    x: point.x + bounds.left,
-    y: point.y + bounds.top,
+    x: clamp(point.x + bounds.left, 0, originalBitmap.width - 1),
+    y: clamp(point.y + bounds.top, 0, originalBitmap.height - 1),
+  }));
+  const boundedLocal = refinedGlobal.map((point) => ({
+    x: point.x - bounds.left,
+    y: point.y - bounds.top,
   }));
 
   postLog('worker-receipt-refined', {
@@ -936,7 +962,7 @@ async function refineAndWarpReceipt(originalBitmap, roughQuad, index) {
   });
 
   const warpStarted = performance.now();
-  const warped = warpImageData(image, refinement.points);
+  const warped = warpImageData(image, boundedLocal);
 
   postLog('worker-receipt-warped', {
     index,
@@ -1006,7 +1032,6 @@ async function scanImage(bitmap) {
 
   const roughDetectionQuads = detectPaperQuads(detectionImage);
   if (!roughDetectionQuads.length) {
-    bitmap.close?.();
     return { quads: [], pixels: [] };
   }
 
@@ -1031,8 +1056,6 @@ async function scanImage(bitmap) {
   for (let index = 0; index < roughSourceQuads.length; index += 1) {
     results.push(await refineAndWarpReceipt(bitmap, roughSourceQuads[index], index));
   }
-  bitmap.close?.();
-
   results.sort((a, b) => a.quad.center.x - b.quad.center.x || a.quad.center.y - b.quad.center.y);
 
   postLog('worker-scan-complete', {
@@ -1069,11 +1092,23 @@ self.onmessage = async (event) => {
         receipts: result.pixels,
         engine: 'built-in-js',
       }, transfers);
+      return;
+    }
+
+    if (message.type === 'warp') {
+      const receipt = await warpReceipt(message.bitmap, message.points);
+      postMessage({
+        type: 'warp-result',
+        requestId: message.requestId,
+        receipt,
+      }, [receipt.buffer]);
     }
   } catch (error) {
     postError(error, {
       type: message.type,
       requestId: message.requestId || null,
     });
+  } finally {
+    if (message.type === 'scan' || message.type === 'warp') message.bitmap?.close?.();
   }
 };

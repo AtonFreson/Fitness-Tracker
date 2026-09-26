@@ -15,8 +15,12 @@ import {
 } from './tanita-scan-image.js?v=5';
 import {
   scanReceiptsInWorker,
+  warpReceiptInWorker,
   resetScannerWorker,
-} from './tanita-scan-worker-client.js?v=4';
+} from './tanita-scan-worker-client.js?v=5';
+import {
+  receiptGeometry, rotateGeometry180, sourceToView, reviewFrame, nudgeCorner,
+} from './tanita-scan-geometry.js';
 
 const $ = (selector) => document.querySelector(selector);
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -26,6 +30,9 @@ const state = {
   receipts: [],
   reviewIndex: 0,
   scanGeneration: 0,
+  selectedCorner: 0,
+  exporting: false,
+  ocrAbort: null,
 };
 
 const diagnosticEntries = [];
@@ -73,7 +80,7 @@ window.addEventListener('tanita-scan-debug-entry', (event) => {
 initDebugCapture();
 debugLog('scanner-controller-loaded', {
   module: 'tanita-scan.js',
-  build: 5,
+  build: 6,
   googleVisionConfigured: Boolean(String(CONFIG.googleVisionApiKey || '').trim()),
 });
 
@@ -128,7 +135,7 @@ function headerScore(text) {
   return score;
 }
 
-async function annotateVisionRequests(requests) {
+async function annotateVisionRequests(requests, signal) {
   const key = String(CONFIG.googleVisionApiKey || '').trim();
   if (!key) throw new Error('Google date OCR is not configured.');
 
@@ -142,6 +149,7 @@ async function annotateVisionRequests(requests) {
         'X-Goog-Api-Key': key,
       },
       body: JSON.stringify({ requests: chunk }),
+      signal,
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
@@ -155,7 +163,7 @@ async function annotateVisionRequests(requests) {
   return responses;
 }
 
-async function readReceiptDates(receipts) {
+async function readReceiptDates(receipts, signal) {
   const requests = [];
   const metadata = [];
 
@@ -174,7 +182,7 @@ async function readReceiptDates(receipts) {
     }
   }
 
-  const responses = await annotateVisionRequests(requests);
+  const responses = await annotateVisionRequests(requests, signal);
   const texts = receipts.map(() => ({ top: '', bottom: '' }));
 
   for (let i = 0; i < metadata.length; i += 1) {
@@ -196,7 +204,10 @@ async function readReceiptDates(receipts) {
       if (bottomHeader > topHeader && bottomHeader >= 2) orientation = 180;
     }
 
-    if (orientation === 180) receipt.canvas = rotateCanvas180(receipt.canvas);
+    if (orientation === 180) {
+      receipt.canvas = rotateCanvas180(receipt.canvas);
+      rotateGeometry180(receipt);
+    }
     receipt.orientationKnown = orientation != null;
     receipt.date = resolved.date;
     receipt.needsManualDate = resolved.needsManual;
@@ -292,6 +303,7 @@ function resetResults() {
 
 async function processPhoto(file) {
   if (!file) return;
+  state.ocrAbort?.abort();
   const scanGeneration = ++state.scanGeneration;
   resetResults();
   setProcessing(true);
@@ -305,7 +317,9 @@ async function processPhoto(file) {
     setDiagnosticStage('Opening photo', 'Working');
     setStatus('Opening full-quality photo...');
     const photoStarted = performance.now();
-    state.sourceCanvas = await imageFileToCanvas(file);
+    const sourceCanvas = await imageFileToCanvas(file);
+    if (scanGeneration !== state.scanGeneration) return;
+    state.sourceCanvas = sourceCanvas;
     debugLog('photo-opened', {
       elapsedMs: Math.round(performance.now() - photoStarted),
       width: state.sourceCanvas.width,
@@ -319,6 +333,7 @@ async function processPhoto(file) {
     const detectorStarted = performance.now();
     const scanResult = await scanReceiptsInWorker(state.sourceCanvas, {
       onStage(stage) {
+        if (scanGeneration !== state.scanGeneration) return;
         if (stage.phase === 'loading-detector') {
           setDiagnosticStage('Loading detector in background', 'Working');
           setStatus(
@@ -368,6 +383,8 @@ async function processPhoto(file) {
     state.receipts = canvases.map((canvas, index) => ({
       id: index + 1,
       canvas,
+      ...receiptGeometry(quads[index].points),
+      cropDirty: false,
       date: null,
       fileName: 'TANITA.pdf',
       customName: false,
@@ -377,8 +394,12 @@ async function processPhoto(file) {
 
     setDiagnosticStage('Reading dates', 'Working');
     setStatus('Reading only the printed date on each receipt...');
+    const receipts = state.receipts;
+    const ocrAbort = new AbortController();
+    state.ocrAbort = ocrAbort;
     try {
-      await readReceiptDates(state.receipts);
+      await readReceiptDates(receipts, ocrAbort.signal);
+      if (scanGeneration !== state.scanGeneration) return;
       setStatus(
         'Found ' + state.receipts.length + ' receipt'
         + (state.receipts.length === 1 ? '' : 's')
@@ -386,7 +407,8 @@ async function processPhoto(file) {
         'success',
       );
     } catch (error) {
-      for (const receipt of state.receipts) {
+      if (scanGeneration !== state.scanGeneration) return;
+      for (const receipt of receipts) {
         receipt.needsManualDate = true;
         receipt.date = null;
       }
@@ -397,6 +419,11 @@ async function processPhoto(file) {
         'warning',
       );
       console.warn(error);
+    }
+
+    state.ocrAbort = null;
+    for (const receipt of receipts) {
+      receipt.detectedPoints = receipt.points.map((point) => ({ ...point }));
     }
 
     assignDefaultFilenames();
@@ -444,8 +471,111 @@ function renderDateCrops(receipt) {
   }
 }
 
+function drawSourceRegion(context, frame, turns, width, height) {
+  const source = state.sourceCanvas;
+  context.fillStyle = '#111827';
+  context.fillRect(0, 0, width, height);
+  context.save();
+  context.scale(width / frame.width, height / frame.height);
+  context.translate(-frame.left, -frame.top);
+  if (turns === 1) context.transform(0, 1, -1, 0, source.height, 0);
+  if (turns === 2) context.transform(-1, 0, 0, -1, source.width, source.height);
+  if (turns === 3) context.transform(0, -1, 1, 0, 0, source.width);
+  context.drawImage(source, 0, 0);
+  context.restore();
+}
+
+function previewPoints(receipt, frame, width, height) {
+  const source = state.sourceCanvas;
+  return receipt.points.map((point) => {
+    const view = sourceToView(point, source.width, source.height, receipt.quarterTurns);
+    return { x: (view.x - frame.left) * width / frame.width, y: (view.y - frame.top) * height / frame.height };
+  });
+}
+
+function traceCrop(context, points) {
+  context.beginPath();
+  points.forEach((point, index) => context[index ? 'lineTo' : 'moveTo'](point.x, point.y));
+  context.closePath();
+}
+
+function renderCornerDetail(receipt) {
+  const canvas = $('#corner-detail');
+  const context = canvas.getContext('2d', { alpha: false });
+  const source = state.sourceCanvas;
+  const selected = sourceToView(receipt.points[state.selectedCorner], source.width, source.height, receipt.quarterTurns);
+  const frame = { left: selected.x - 48, top: selected.y - 16, width: 96, height: 32 };
+  drawSourceRegion(context, frame, receipt.quarterTurns, canvas.width, canvas.height);
+  traceCrop(context, previewPoints(receipt, frame, canvas.width, canvas.height));
+  context.strokeStyle = '#38bdf8';
+  context.lineWidth = 2;
+  context.stroke();
+  const labels = ['Top left', 'Top right', 'Bottom right', 'Bottom left'];
+  $('#selected-corner-label').textContent = $('#corner-controls').classList.contains('collapsed')
+    ? 'Adjust corners' : labels[state.selectedCorner];
+  for (const button of document.querySelectorAll('[data-corner]')) {
+    button.setAttribute('aria-pressed', String(Number(button.dataset.corner) === state.selectedCorner));
+  }
+}
+
 function renderReviewPreview(receipt) {
-  copyCanvas(receipt.canvas, $('#review-canvas'), 950);
+  const source = state.sourceCanvas;
+  const canvas = $('#review-canvas');
+  const frame = reviewFrame(receipt.points, source.width, source.height, receipt.quarterTurns);
+  receipt.previewFrame = frame;
+  const scale = Math.min(1, 1100 / frame.width);
+  canvas.width = Math.max(1, Math.round(frame.width * scale));
+  canvas.height = Math.max(1, Math.round(frame.height * scale));
+  const context = canvas.getContext('2d', { alpha: false });
+  drawSourceRegion(context, frame, receipt.quarterTurns, canvas.width, canvas.height);
+  const points = previewPoints(receipt, frame, canvas.width, canvas.height);
+  context.beginPath();
+  context.rect(0, 0, canvas.width, canvas.height);
+  context.moveTo(points[0].x, points[0].y);
+  points.forEach((point) => context.lineTo(point.x, point.y));
+  context.closePath();
+  context.fillStyle = 'rgb(0 0 0 / .2)';
+  context.fill('evenodd');
+  const displayScale = canvas.width / (canvas.clientWidth || 350);
+  traceCrop(context, points);
+  context.strokeStyle = '#38bdf8';
+  context.lineWidth = 1.5 * displayScale;
+  context.stroke();
+  const names = ['TL', 'TR', 'BR', 'BL'];
+  points.forEach((point, index) => {
+    context.beginPath();
+    context.arc(point.x, point.y, (index === state.selectedCorner ? 5 : 3) * displayScale, 0, Math.PI * 2);
+    context.fillStyle = index === state.selectedCorner ? '#f59e0b' : '#38bdf8';
+    context.fill();
+    context.font = '800 ' + 10 * displayScale + 'px system-ui';
+    context.fillText(names[index], point.x + 7 * displayScale, point.y - 7 * displayScale);
+  });
+  renderCornerDetail(receipt);
+}
+
+function selectCorner(index) {
+  if (state.exporting) return;
+  const receipt = state.receipts[state.reviewIndex];
+  if (!receipt) return;
+  state.selectedCorner = index;
+  renderReviewPreview(receipt);
+}
+
+function moveSelectedCorner(dx, dy) {
+  if (state.exporting) return;
+  const receipt = state.receipts[state.reviewIndex];
+  if (!receipt) return;
+  const source = state.sourceCanvas;
+  const points = nudgeCorner(receipt.points, state.selectedCorner, dx, dy, receipt.quarterTurns, source.width, source.height);
+  if (!points) {
+    $('#corner-adjustment-status').textContent = 'Keep the crop inside the photo and its edges uncrossed.';
+    return;
+  }
+  receipt.points = points;
+  receipt.cropDirty = true;
+  renderReviewPreview(receipt);
+  $('#corner-adjustment-status').textContent = $('#selected-corner-label').textContent
+    + ' moved ' + Math.abs(dx || dy) + ' pixels ' + (dx < 0 ? 'left' : dx > 0 ? 'right' : dy < 0 ? 'up' : 'down') + '.';
 }
 
 function reviewDateState(receipt) {
@@ -472,6 +602,7 @@ function openReview(index) {
   if (!state.receipts.length) return;
 
   state.reviewIndex = clamp(index, 0, state.receipts.length - 1);
+  state.selectedCorner = 0;
   const receipt = state.receipts[state.reviewIndex];
   if (!receipt.customName) receipt.fileName = defaultFilenameFor(state.reviewIndex);
 
@@ -480,19 +611,20 @@ function openReview(index) {
   $('#review-name').value = receipt.fileName;
   $('#review-status').textContent = '';
 
-  renderReviewPreview(receipt);
-  reviewDateState(receipt);
-
   $('#review-screen').hidden = false;
   $('#review-complete').hidden = true;
   $('#review-content').hidden = false;
   document.body.classList.add('review-open');
-  window.scrollTo(0, 0);
+  renderReviewPreview(receipt);
+  reviewDateState(receipt);
+  $('#review-screen').scrollTop = 0;
 }
 
 function closeReview() {
+  if (state.exporting) return;
   $('#review-screen').hidden = true;
   document.body.classList.remove('review-open');
+  if (state.receipts.length) renderSourcePreview(state.receipts.map((receipt) => ({ points: receipt.points })));
 }
 
 function sanitizePdfName(input) {
@@ -544,22 +676,26 @@ function downloadBlob(blob, fileName) {
 
 async function confirmCurrentReceipt() {
   const receipt = state.receipts[state.reviewIndex];
-  if (!receipt) return;
+  if (!receipt || state.exporting) return;
 
   if (!receipt.date) {
     $('#review-status').textContent = 'Enter the printed date before downloading.';
     return;
   }
 
-  const button = $('#confirm-download');
-  button.disabled = true;
+  setReviewBusy(true);
   $('#review-status').textContent = 'Creating PDF...';
 
   try {
+    if (receipt.cropDirty) {
+      receipt.canvas = await warpReceiptInWorker(state.sourceCanvas, receipt.points);
+      receipt.cropDirty = false;
+    }
     receipt.fileName = sanitizePdfName($('#review-name').value);
     const blob = await createPdfBlob(receipt.canvas);
     downloadBlob(blob, receipt.fileName);
     receipt.downloaded = true;
+    setReviewBusy(false);
 
     if (state.reviewIndex + 1 < state.receipts.length) {
       openReview(state.reviewIndex + 1);
@@ -573,8 +709,17 @@ async function confirmCurrentReceipt() {
   } catch (error) {
     console.error(error);
     $('#review-status').textContent = error.message || String(error);
-    button.disabled = false;
+  } finally {
+    setReviewBusy(false);
   }
+}
+
+function setReviewBusy(busy) {
+  state.exporting = busy;
+  for (const control of document.querySelectorAll('#corner-controls button, #review-rotate, #reset-corners, #review-close, #review-name, #manual-date')) {
+    control.disabled = busy;
+  }
+  $('#confirm-download').disabled = busy || !state.receipts[state.reviewIndex]?.date;
 }
 
 function applyManualDate(value) {
@@ -609,9 +754,12 @@ function applyManualDate(value) {
 
 function rotateCurrentReceipt() {
   const receipt = state.receipts[state.reviewIndex];
-  if (!receipt) return;
+  if (!receipt || state.exporting) return;
 
   receipt.canvas = rotateCanvas180(receipt.canvas);
+  rotateGeometry180(receipt);
+  const [tl, tr, br, bl] = receipt.detectedPoints;
+  receipt.detectedPoints = [br, bl, tl, tr];
   receipt.orientationKnown = true;
   renderReviewPreview(receipt);
 
@@ -619,6 +767,8 @@ function rotateCurrentReceipt() {
 }
 
 function resetScanner() {
+  state.ocrAbort?.abort();
+  state.ocrAbort = null;
   state.scanGeneration += 1;
   closeReview();
   resetResults();
@@ -639,7 +789,10 @@ for (const input of [$('#camera-input'), $('#photo-input')]) {
 
 $('#cancel-scan').addEventListener('click', () => {
   state.scanGeneration += 1;
+  state.ocrAbort?.abort();
+  state.ocrAbort = null;
   resetScannerWorker();
+  resetResults();
   setDiagnosticStage('Cancelled', 'Ready');
   setStatus('Scan cancelled. You can choose the photo again.');
   setProcessing(false);
@@ -648,6 +801,48 @@ $('#cancel-scan').addEventListener('click', () => {
 $('#start-review').addEventListener('click', () => openReview(0));
 $('#review-close').addEventListener('click', closeReview);
 $('#review-rotate').addEventListener('click', rotateCurrentReceipt);
+$('#toggle-corner-controls').addEventListener('click', () => {
+  const collapsed = $('#corner-controls').classList.toggle('collapsed');
+  const button = $('#toggle-corner-controls');
+  button.textContent = collapsed ? 'Show' : 'Hide';
+  button.setAttribute('aria-expanded', String(!collapsed));
+  button.setAttribute('aria-label', (collapsed ? 'Show' : 'Hide') + ' corner controls');
+  renderCornerDetail(state.receipts[state.reviewIndex]);
+});
+$('#reset-corners').addEventListener('click', () => {
+  if (state.exporting) return;
+  const receipt = state.receipts[state.reviewIndex];
+  if (!receipt) return;
+  receipt.points = receipt.detectedPoints.map((point) => ({ ...point }));
+  receipt.cropDirty = true;
+  renderReviewPreview(receipt);
+  $('#corner-adjustment-status').textContent = 'Detected corners restored.';
+});
+for (const button of document.querySelectorAll('[data-corner]')) {
+  button.addEventListener('click', () => selectCorner(Number(button.dataset.corner)));
+}
+for (const button of document.querySelectorAll('[data-dx]')) {
+  button.addEventListener('click', () => moveSelectedCorner(Number(button.dataset.dx), Number(button.dataset.dy)));
+}
+$('#corner-controls').addEventListener('keydown', (event) => {
+  const directions = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
+  const direction = directions[event.key];
+  if (!direction || event.altKey || event.ctrlKey || event.metaKey) return;
+  event.preventDefault();
+  const step = event.shiftKey ? 10 : 1;
+  moveSelectedCorner(direction[0] * step, direction[1] * step);
+});
+$('#review-canvas').addEventListener('click', (event) => {
+  const receipt = state.receipts[state.reviewIndex];
+  if (!receipt || state.exporting) return;
+  const canvas = event.currentTarget;
+  const rect = canvas.getBoundingClientRect();
+  const points = previewPoints(receipt, receipt.previewFrame, rect.width, rect.height);
+  const pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  const distances = points.map((point) => Math.hypot(point.x - pointer.x, point.y - pointer.y));
+  const closest = Math.min(...distances);
+  if (closest <= 44) selectCorner(distances.indexOf(closest));
+});
 $('#confirm-download').addEventListener('click', confirmCurrentReceipt);
 $('#manual-date').addEventListener('input', (event) => {
   applyManualDate(event.target.value);

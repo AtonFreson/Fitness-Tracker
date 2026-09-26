@@ -7,7 +7,7 @@
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>TANITA Batch Scanner</title>
   <link rel="stylesheet" href="./styles.css?v=7">
-  <link rel="stylesheet" href="./tanita-scan.css?v=3">
+  <link rel="stylesheet" href="./tanita-scan.css?v=4">
 </head>
 <body class="scan-page">
   <header class="site-header scan-header">
@@ -85,7 +85,7 @@
     <div id="review-content" class="review-content">
       <header class="review-header">
         <div>
-          <p class="eyebrow">PDF review</p>
+          <p class="eyebrow">Review crop</p>
           <strong id="review-progress">Receipt 1 of 1</strong>
         </div>
         <button id="review-close" type="button" class="secondary compact-button">Close</button>
@@ -109,12 +109,41 @@
         </section>
       </div>
 
+      <div class="crop-toolbar">
+        <p>The blue outline is the PDF edge. The photo includes a 10% margin for checking the crop.</p>
+        <div class="actions wrap">
+          <button id="review-rotate" type="button" class="secondary compact-button">Rotate 180°</button>
+          <button id="reset-corners" type="button" class="secondary compact-button">Reset corners</button>
+        </div>
+      </div>
       <div class="pdf-preview-area">
-        <div class="pdf-sheet"><canvas id="review-canvas"></canvas></div>
+        <div class="pdf-sheet"><canvas id="review-canvas" aria-label="Receipt photo with adjustable crop outline"></canvas></div>
       </div>
 
+      <aside id="corner-controls" class="corner-controls" aria-label="Adjust crop corners">
+        <div class="corner-detail-heading"><strong id="selected-corner-label">Top left</strong><span class="detail-scale">2×</span><button id="toggle-corner-controls" type="button" aria-expanded="true" aria-label="Hide corner controls">Hide</button></div>
+        <canvas id="corner-detail" width="384" height="128" aria-label="Magnified view of selected corner"></canvas>
+        <div class="corner-selectors" role="group" aria-label="Corner to adjust">
+          <button type="button" data-corner="0" aria-label="Top left corner" aria-pressed="true">TL</button>
+          <button type="button" data-corner="1" aria-label="Top right corner" aria-pressed="false">TR</button>
+          <button type="button" data-corner="3" aria-label="Bottom left corner" aria-pressed="false">BL</button>
+          <button type="button" data-corner="2" aria-label="Bottom right corner" aria-pressed="false">BR</button>
+        </div>
+        <div class="corner-dpad" role="group" aria-label="Move selected corner in photo pixels">
+          <button type="button" class="nudge-up-ten" data-dx="0" data-dy="-10" aria-label="Move up 10 pixels">↑<small>10</small></button>
+          <button type="button" class="nudge-up-one" data-dx="0" data-dy="-1" aria-label="Move up 1 pixel">↑<small>1</small></button>
+          <button type="button" class="nudge-left-ten" data-dx="-10" data-dy="0" aria-label="Move left 10 pixels">←<small>10</small></button>
+          <button type="button" class="nudge-left-one" data-dx="-1" data-dy="0" aria-label="Move left 1 pixel">←<small>1</small></button>
+          <span class="dpad-center" aria-hidden="true">px</span>
+          <button type="button" class="nudge-right-one" data-dx="1" data-dy="0" aria-label="Move right 1 pixel">→<small>1</small></button>
+          <button type="button" class="nudge-right-ten" data-dx="10" data-dy="0" aria-label="Move right 10 pixels">→<small>10</small></button>
+          <button type="button" class="nudge-down-one" data-dx="0" data-dy="1" aria-label="Move down 1 pixel">↓<small>1</small></button>
+          <button type="button" class="nudge-down-ten" data-dx="0" data-dy="10" aria-label="Move down 10 pixels">↓<small>10</small></button>
+        </div>
+        <span id="corner-adjustment-status" class="visually-hidden" role="status"></span>
+      </aside>
+
       <footer class="review-actions">
-        <button id="review-rotate" type="button" class="secondary">Rotate 180 degrees</button>
         <button id="confirm-download" type="button">Confirm and download PDF</button>
         <p id="review-status" class="status" role="status"></p>
       </footer>
@@ -132,6 +161,6 @@
   </section>
 
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
-  <script type="module" src="./src/tanita-scan.js?v=9"></script>
+  <script type="module" src="./src/tanita-scan.js?v=10"></script>
 </body>
 </html>
