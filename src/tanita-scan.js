@@ -80,7 +80,7 @@ window.addEventListener('tanita-scan-debug-entry', (event) => {
 initDebugCapture();
 debugLog('scanner-controller-loaded', {
   module: 'tanita-scan.js',
-  build: 6,
+  build: 7,
   googleVisionConfigured: Boolean(String(CONFIG.googleVisionApiKey || '').trim()),
 });
 
@@ -504,15 +504,15 @@ function renderCornerDetail(receipt) {
   const context = canvas.getContext('2d', { alpha: false });
   const source = state.sourceCanvas;
   const selected = sourceToView(receipt.points[state.selectedCorner], source.width, source.height, receipt.quarterTurns);
-  const frame = { left: selected.x - 48, top: selected.y - 16, width: 96, height: 32 };
+  const frame = { left: selected.x - 48, top: selected.y - 32, width: 96, height: 64 };
+  context.imageSmoothingEnabled = false;
   drawSourceRegion(context, frame, receipt.quarterTurns, canvas.width, canvas.height);
   traceCrop(context, previewPoints(receipt, frame, canvas.width, canvas.height));
   context.strokeStyle = '#38bdf8';
   context.lineWidth = 2;
   context.stroke();
   const labels = ['Top left', 'Top right', 'Bottom right', 'Bottom left'];
-  $('#selected-corner-label').textContent = $('#corner-controls').classList.contains('collapsed')
-    ? 'Adjust corners' : labels[state.selectedCorner];
+  canvas.setAttribute('aria-label', 'Magnified view of ' + labels[state.selectedCorner].toLowerCase() + ' corner');
   for (const button of document.querySelectorAll('[data-corner]')) {
     button.setAttribute('aria-pressed', String(Number(button.dataset.corner) === state.selectedCorner));
   }
@@ -574,14 +574,14 @@ function moveSelectedCorner(dx, dy) {
   receipt.points = points;
   receipt.cropDirty = true;
   renderReviewPreview(receipt);
-  $('#corner-adjustment-status').textContent = $('#selected-corner-label').textContent
+  queuePdfPreparation(receipt);
+  $('#corner-adjustment-status').textContent = ['Top left', 'Top right', 'Bottom right', 'Bottom left'][state.selectedCorner]
     + ' moved ' + Math.abs(dx || dy) + ' pixels ' + (dx < 0 ? 'left' : dx > 0 ? 'right' : dy < 0 ? 'up' : 'down') + '.';
 }
 
 function reviewDateState(receipt) {
   const manual = $('#manual-date-panel');
   const auto = $('#auto-date-status');
-  const confirm = $('#confirm-download');
 
   if (receipt.needsManualDate || !receipt.date) {
     manual.hidden = false;
@@ -589,13 +589,12 @@ function reviewDateState(receipt) {
     renderDateCrops(receipt);
     $('#manual-date').value = receipt.manualDateText || '';
     $('#manual-date-status').textContent = '';
-    confirm.disabled = !receipt.date;
   } else {
     manual.hidden = true;
     auto.hidden = false;
     auto.textContent = 'Date read as ' + receipt.date + '.';
-    confirm.disabled = false;
   }
+  updateDownloadButton();
 }
 
 function openReview(index) {
@@ -618,6 +617,7 @@ function openReview(index) {
   renderReviewPreview(receipt);
   reviewDateState(receipt);
   $('#review-screen').scrollTop = 0;
+  if (!receipt.pdfBlob) queuePdfPreparation(receipt, 0);
 }
 
 function closeReview() {
@@ -634,7 +634,7 @@ function sanitizePdfName(input) {
   return value;
 }
 
-async function createPdfBlob(canvas) {
+function createPdfBlob(canvas) {
   const jsPDF = window.jspdf?.jsPDF;
   if (!jsPDF) {
     throw new Error('The PDF generator did not load. Reload the page and try again.');
@@ -664,7 +664,9 @@ async function createPdfBlob(canvas) {
 }
 
 function downloadBlob(blob, fileName) {
-  const url = URL.createObjectURL(blob);
+  // WebKit can open application/pdf Blob URLs as a preview even with download.
+  const attachment = new Blob([blob], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(attachment);
   const anchor = document.createElement('a');
   anchor.href = url;
   anchor.download = fileName;
@@ -674,7 +676,7 @@ function downloadBlob(blob, fileName) {
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
-async function confirmCurrentReceipt() {
+function confirmCurrentReceipt() {
   const receipt = state.receipts[state.reviewIndex];
   if (!receipt || state.exporting) return;
 
@@ -682,18 +684,16 @@ async function confirmCurrentReceipt() {
     $('#review-status').textContent = 'Enter the printed date before downloading.';
     return;
   }
+  if (!receipt.pdfBlob) {
+    queuePdfPreparation(receipt, 0);
+    return;
+  }
 
   setReviewBusy(true);
-  $('#review-status').textContent = 'Creating PDF...';
-
   try {
-    if (receipt.cropDirty) {
-      receipt.canvas = await warpReceiptInWorker(state.sourceCanvas, receipt.points);
-      receipt.cropDirty = false;
-    }
     receipt.fileName = sanitizePdfName($('#review-name').value);
-    const blob = await createPdfBlob(receipt.canvas);
-    downloadBlob(blob, receipt.fileName);
+    downloadBlob(receipt.pdfBlob, receipt.fileName);
+    receipt.pdfBlob = null;
     receipt.downloaded = true;
     setReviewBusy(false);
 
@@ -714,12 +714,78 @@ async function confirmCurrentReceipt() {
   }
 }
 
+function reviewingReceipt(receipt) {
+  return state.receipts[state.reviewIndex] === receipt
+    && !$('#review-screen').hidden && !$('#review-content').hidden;
+}
+
+function updateDownloadButton() {
+  const receipt = state.receipts[state.reviewIndex];
+  const button = $('#confirm-download');
+  const retry = Boolean(receipt?.pdfError);
+  button.disabled = state.exporting || !receipt?.date || (!receipt.pdfBlob && !receipt.pdfError);
+  button.setAttribute('aria-label', retry ? 'Retry PDF' : 'Confirm and download PDF');
+  $('.confirm-full').textContent = retry ? 'Retry PDF' : 'Confirm and download PDF';
+  $('.confirm-short').textContent = retry ? 'Retry PDF' : 'Download PDF';
+}
+
+async function prepareReceiptPdf(receipt) {
+  if (receipt.preparing) {
+    receipt.prepareAgain = true;
+    return;
+  }
+  if (!state.receipts.includes(receipt)) return;
+  const revision = receipt.pdfRevision;
+  receipt.preparing = true;
+  try {
+    const canvas = receipt.cropDirty
+      ? await warpReceiptInWorker(state.sourceCanvas, receipt.points)
+      : receipt.canvas;
+    if (revision !== receipt.pdfRevision) return;
+    const blob = createPdfBlob(canvas);
+    if (revision !== receipt.pdfRevision) return;
+    receipt.canvas = canvas;
+    receipt.cropDirty = false;
+    receipt.pdfBlob = blob;
+    if (reviewingReceipt(receipt)) {
+      $('#review-status').textContent = '';
+      updateDownloadButton();
+    }
+  } catch (error) {
+    if (revision === receipt.pdfRevision && reviewingReceipt(receipt)) {
+      debugError('pdf-preparation-failed', error);
+      receipt.pdfError = error;
+      $('#review-status').textContent = error.message || String(error);
+      updateDownloadButton();
+    }
+  } finally {
+    receipt.preparing = false;
+    if (state.receipts.includes(receipt) && (receipt.prepareAgain || revision !== receipt.pdfRevision)) {
+      receipt.prepareAgain = false;
+      clearTimeout(receipt.prepareTimer);
+      receipt.prepareTimer = setTimeout(() => prepareReceiptPdf(receipt), 0);
+    }
+  }
+}
+
+function queuePdfPreparation(receipt, delay = 160) {
+  receipt.pdfRevision = (receipt.pdfRevision || 0) + 1;
+  receipt.pdfBlob = null;
+  receipt.pdfError = null;
+  clearTimeout(receipt.prepareTimer);
+  if (reviewingReceipt(receipt)) {
+    $('#review-status').textContent = 'Preparing PDF...';
+    updateDownloadButton();
+  }
+  receipt.prepareTimer = setTimeout(() => prepareReceiptPdf(receipt), delay);
+}
+
 function setReviewBusy(busy) {
   state.exporting = busy;
   for (const control of document.querySelectorAll('#corner-controls button, #review-rotate, #reset-corners, #review-close, #review-name, #manual-date')) {
     control.disabled = busy;
   }
-  $('#confirm-download').disabled = busy || !state.receipts[state.reviewIndex]?.date;
+  updateDownloadButton();
 }
 
 function applyManualDate(value) {
@@ -736,7 +802,7 @@ function applyManualDate(value) {
     status.textContent = value.trim()
       ? 'Use the printed date, for example 23/SEP/2026.'
       : '';
-    $('#confirm-download').disabled = true;
+    updateDownloadButton();
     return;
   }
 
@@ -749,7 +815,7 @@ function applyManualDate(value) {
     $('#review-name').value = receipt.fileName;
   }
 
-  $('#confirm-download').disabled = false;
+  updateDownloadButton();
 }
 
 function rotateCurrentReceipt() {
@@ -762,6 +828,7 @@ function rotateCurrentReceipt() {
   receipt.detectedPoints = [br, bl, tl, tr];
   receipt.orientationKnown = true;
   renderReviewPreview(receipt);
+  queuePdfPreparation(receipt);
 
   if (!$('#manual-date-panel').hidden) renderDateCrops(receipt);
 }
@@ -801,14 +868,6 @@ $('#cancel-scan').addEventListener('click', () => {
 $('#start-review').addEventListener('click', () => openReview(0));
 $('#review-close').addEventListener('click', closeReview);
 $('#review-rotate').addEventListener('click', rotateCurrentReceipt);
-$('#toggle-corner-controls').addEventListener('click', () => {
-  const collapsed = $('#corner-controls').classList.toggle('collapsed');
-  const button = $('#toggle-corner-controls');
-  button.textContent = collapsed ? 'Show' : 'Hide';
-  button.setAttribute('aria-expanded', String(!collapsed));
-  button.setAttribute('aria-label', (collapsed ? 'Show' : 'Hide') + ' corner controls');
-  renderCornerDetail(state.receipts[state.reviewIndex]);
-});
 $('#reset-corners').addEventListener('click', () => {
   if (state.exporting) return;
   const receipt = state.receipts[state.reviewIndex];
@@ -816,6 +875,7 @@ $('#reset-corners').addEventListener('click', () => {
   receipt.points = receipt.detectedPoints.map((point) => ({ ...point }));
   receipt.cropDirty = true;
   renderReviewPreview(receipt);
+  queuePdfPreparation(receipt);
   $('#corner-adjustment-status').textContent = 'Detected corners restored.';
 });
 for (const button of document.querySelectorAll('[data-corner]')) {
