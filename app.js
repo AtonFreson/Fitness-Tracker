@@ -1,5 +1,5 @@
 import { CONFIG, configProblems } from './config.js';
-import { importUploadedFile } from './src/import-router.js?v=6';
+import { importUploadedFile } from './src/import-router.js?v=7';
 import {
   saveLog,
   saveLogs,
@@ -33,6 +33,7 @@ import {
   preserveReviewedIndicators,
 } from './src/tanita-indicator-review.js?v=2';
 import { cleanPhysiqueRating } from './src/text-field-repair.js?v=2';
+import { mergeHealthWorkouts } from './src/health-records.js';
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -423,6 +424,7 @@ function applyBodyForm() {
 }
 
 function renderHealthReview(logs) {
+  logs = mergeHealthWorkouts(logsCache, logs);
   pendingHealthLogs = logs;
   if (!logs.length) {
     $('#import-status').textContent = 'Apple Health was detected, but no Traditional Strength Training workouts were found.';

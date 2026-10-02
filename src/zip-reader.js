@@ -65,24 +65,28 @@ async function compressedPayload(file, entry) {
 
 async function fflateRawStream(blob) {
   const mod = await import('https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js');
+  let offset = 0;
+  let cancelled = false;
+  let target;
+  const inflator = new mod.Inflate((chunk, final) => {
+    if (cancelled) return;
+    if (chunk?.length) target.enqueue(chunk);
+    if (final) target.close();
+  });
   return new ReadableStream({
-    async start(controller) {
-      const inflator = new mod.Inflate((chunk, final) => {
-        if (chunk?.length) controller.enqueue(chunk);
-        if (final) controller.close();
-      });
-      const reader = blob.stream().getReader();
+    async pull(controller) {
+      target = controller;
       try {
-        while (true) {
-          const { value, done } = await reader.read();
-          inflator.push(value || new Uint8Array(), done);
-          if (done) break;
-        }
+        const end = Math.min(offset + 8192, blob.size);
+        const chunk = new Uint8Array(await blob.slice(offset, end).arrayBuffer());
+        offset = end;
+        if (!cancelled) inflator.push(chunk, offset === blob.size);
       } catch (error) {
-        controller.error(error);
+        if (!cancelled) controller.error(error);
       }
     },
-  });
+    cancel() { cancelled = true; },
+  }, { highWaterMark: 0 });
 }
 
 async function streamEntry(file, entry) {
@@ -112,26 +116,44 @@ async function openAppleHealthExportZip(file) {
     return aPreferred - bPreferred || a.name.length - b.name.length;
   });
   const entry = candidates[0];
+  if (entry.flags & 1) throw new Error('Encrypted ZIP files are not supported. Choose the original Apple Health export.');
   return {
     name: entry.name,
     type: 'application/xml',
     size: entry.uncompressedSize,
-    stream: () => new ReadableStream({
-      async start(controller) {
-        try {
-          const stream = await streamEntry(file, entry);
-          const reader = stream.getReader();
-          while (true) {
+    stream: () => {
+      let reader;
+      let cancelled = false;
+      let bytesRead = 0;
+      return new ReadableStream({
+        async pull(controller) {
+          try {
+            if (!reader) {
+              reader = (await streamEntry(file, entry)).getReader();
+              if (cancelled) { await reader.cancel(); return; }
+            }
             const { value, done } = await reader.read();
-            if (done) break;
-            controller.enqueue(value);
+            if (cancelled) return;
+            if (done) {
+              if (bytesRead !== entry.uncompressedSize) throw new Error('The Health ZIP is incomplete. Export it again from Apple Health.');
+              controller.close();
+              reader.releaseLock();
+            } else {
+              bytesRead += value.byteLength;
+              if (bytesRead > entry.uncompressedSize) throw new Error('Invalid size in the Health ZIP.');
+              controller.enqueue(value);
+            }
+          } catch (error) {
+            if (!cancelled) controller.error(error);
+            try { await reader?.cancel(error); } catch {}
           }
-          controller.close();
-        } catch (error) {
-          controller.error(error);
-        }
-      },
-    }),
+        },
+        async cancel(reason) {
+          cancelled = true;
+          await reader?.cancel(reason);
+        },
+      }, { highWaterMark: 0 });
+    },
   };
 }
 

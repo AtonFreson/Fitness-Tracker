@@ -1,4 +1,4 @@
-import { openAppleHealthExportZip } from './zip-reader.js';
+import { openAppleHealthExportZip } from './zip-reader.js?v=2';
 
 const TARGET_WORKOUT = 'HKWorkoutActivityTypeTraditionalStrengthTraining';
 const HEART_RATE = 'HKQuantityTypeIdentifierHeartRate';
@@ -38,22 +38,33 @@ function round1(value) {
   return Math.round(Number(value) * 10) / 10;
 }
 
-async function streamTags(file, onTag) {
+async function streamTags(file, onTag, onProgress, phase) {
   const reader = file.stream().getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
-  while (true) {
+  let bytesRead = 0;
+  let lastProgress = 0;
+  try { while (true) {
     const { value, done } = await reader.read();
+    bytesRead += value?.byteLength || 0;
     buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
     let end;
     while ((end = buffer.indexOf('>')) >= 0) {
       const chunk = buffer.slice(0, end + 1);
       buffer = buffer.slice(end + 1);
       const start = chunk.lastIndexOf('<');
-      if (start >= 0) await onTag(chunk.slice(start));
+      if (start >= 0) onTag(chunk.slice(start));
     }
     if (done) break;
-    if (buffer.length > 2_000_000 && !buffer.includes('<')) buffer = buffer.slice(-4096);
+    if (buffer.length > 2_000_000) throw new Error('The Health XML contains an invalid or excessively long tag.');
+    if (Date.now() - lastProgress >= 250) {
+      onProgress?.(`${phase}: ${Math.min(100, Math.round(bytesRead / file.size * 100))}% · ${Math.round(bytesRead / 1e6)} MB read…`);
+      lastProgress = Date.now();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  } } finally {
+    try { await reader.cancel(); } catch {}
+    reader.releaseLock();
   }
 }
 
@@ -110,7 +121,7 @@ async function collectStrengthWorkouts(file, onProgress) {
       current = null;
       if (onProgress && workouts.length && workouts.length % 25 === 0) onProgress(`Found ${workouts.length} strength workouts…`);
     }
-  });
+  }, onProgress, 'Pass 1/2 · finding workouts');
 
   return workouts.sort((a, b) => a.start_ms - b.start_ms);
 }
@@ -146,6 +157,7 @@ async function enrichWithRecords(file, workouts, onProgress) {
 
   await streamTags(file, (tag) => {
     if (!tag.startsWith('<Record ')) return;
+    if (!tag.includes(HEART_RATE) && !tag.includes(ACTIVE_ENERGY)) return;
     const values = attrs(tag);
     if (values.type !== HEART_RATE && values.type !== ACTIVE_ENERGY) return;
 
@@ -181,7 +193,7 @@ async function enrichWithRecords(file, workouts, onProgress) {
     }
 
     if (onProgress && matched % 5000 === 0) onProgress(`Matched ${matched.toLocaleString()} workout records…`);
-  });
+  }, onProgress, 'Pass 2/2 · matching heart rate');
 
   return workouts.map((workout, index) => {
     const summary = summaries[index];

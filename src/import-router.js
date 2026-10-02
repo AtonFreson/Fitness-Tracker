@@ -1,4 +1,4 @@
-import { importAppleHealthFile } from './health-import.js?v=5';
+import { importHealthInWorker } from './health-import-client.js?v=1';
 import { detectUploadKind, labelForSource } from './source-detection.js';
 
 async function importUploadedFile(file, { onStatus, onProgress } = {}) {
@@ -23,7 +23,7 @@ async function importUploadedFile(file, { onStatus, onProgress } = {}) {
       category: 'apple_health',
       detectedSource: 'apple_health',
       sourceLabel: 'Apple Health',
-      logs: await importAppleHealthFile(file, { onProgress: progress }),
+      logs: await importHealthInWorker(file, { onProgress: progress }),
     };
   }
 
