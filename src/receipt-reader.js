@@ -1,6 +1,6 @@
 import * as pdfjsLib from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.2.108/build/pdf.mjs';
 import { CONFIG } from '../config.js';
-import { parseTanitaText, toBodyCompositionLog, mergeTanitaParses } from './tanita-parser.js';
+import { parseTanitaText, toBodyCompositionLog, mergeTanitaParses } from './tanita-parser.js?v=2';
 import { parseAccuniqText, toAccuniqBodyCompositionLog } from './accuniq-parser.js';
 import { detectBodyCompositionSource, labelForSource } from './source-detection.js';
 

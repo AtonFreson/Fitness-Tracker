@@ -1,4 +1,4 @@
-import { importHealthInWorker } from './health-import-client.js?v=1';
+import { importHealthInWorker } from './health-import-client.js?v=3';
 import { detectUploadKind, labelForSource } from './source-detection.js';
 
 async function importUploadedFile(file, { onStatus, onProgress } = {}) {
@@ -6,7 +6,7 @@ async function importUploadedFile(file, { onStatus, onProgress } = {}) {
   const progress = onProgress || onStatus;
 
   if (kind === 'body_composition_report') {
-    const { readBodyCompositionReport } = await import('./receipt-reader.js?v=6');
+    const { readBodyCompositionReport } = await import('./receipt-reader.js?v=7');
     const result = await readBodyCompositionReport(file, { onStatus: progress });
     return {
       category: 'body_composition',

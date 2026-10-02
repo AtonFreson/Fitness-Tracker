@@ -2,11 +2,22 @@
 
 Phone-friendly tracker hosted on GitHub Pages, with fitness data stored in a separate private GitHub repository.
 
+## Visualiser
+- **Summary** — composition reference, recent training and latest records
+- **Body** — dated device snapshots, every numeric metric, unrestricted report wording and nearby device comparisons
+- **Training** — consistency calendar, recorded time/energy and session heart-rate inspection with elapsed-time comparison
+- **Explore** — date ranges, chart scrubbing, per-device smoothing, paired comparisons, conditional projections and a composition scenario calculator
+- **Data** — import, review, edit, sync, filter, export and delete records
+
+ACCUNIQ is the preferred composition reference. TANITA keeps a separate history; models never average readings from different devices. See [design and analytics methods](docs/visualiser-design.md) for the research, assumptions and data requirements.
+
 ## Imports
 - TANITA DC-360 PDF/image scans using Google Cloud Vision OCR with an isolated local fallback
 - ACCUNIQ reports
 - Apple Health `export.xml` or the original export ZIP
 - Traditional Strength Training workouts with active energy and timestamped heart-rate samples
+
+Health ZIPs are read in bounded chunks and parsed in a background worker. Re-importing retains and deduplicates older heart-rate samples even if the newer export omits them. The ZIP fallback is bundled locally.
 
 The private data repository stores deduplicated logs in monthly JSON files under `data/events/`.
 

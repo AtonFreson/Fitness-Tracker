@@ -1,91 +1,420 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#111827">
-  <meta name="robots" content="noindex,nofollow,noarchive">
-  <title>Fitness Tracker</title>
-  <link rel="stylesheet" href="./styles.css?v=7">
-  <link rel="stylesheet" href="./enhancements.css?v=2">
-</head>
-<body>
-  <section id="auth-gate" class="vault-gate" aria-live="polite">
-    <div class="vault-card">
-      <div class="lock-mark" aria-hidden="true">🏋️</div>
-      <p class="eyebrow">Private GitHub data</p>
-      <h1 class="gate-title">Fitness Tracker</h1>
-      <p>Measurements and workouts are stored in the configured private GitHub repository.</p>
-      <div id="setup-problems" hidden></div>
-      <div id="token-setup" class="token-setup">
-        <p class="token-step"><strong>1.</strong> Open <code>TRACKER_TOKEN.txt</code> in the private repository and copy its contents.</p>
-        <a id="saved-token-link" class="file-button github-link" href="#" target="_blank" rel="noopener">Open saved token on GitHub</a>
-        <p class="compact">For initial setup or token replacement: <a id="create-token-link" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">create a fine-grained token</a>.</p>
-        <p class="token-step"><strong>2.</strong> Paste the token.</p>
-        <label class="token-field"><span>GitHub token</span><input id="github-token" type="password" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="github_pat_…"></label>
-        <label class="remember-row"><input id="remember-token" type="checkbox" checked><span>Remember on this browser</span></label>
-        <button id="connect-github" type="button" class="github-signin">Connect GitHub</button>
-        <p id="auth-status" class="status compact" role="status"></p>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#f5f5f7" />
+    <meta name="robots" content="noindex,nofollow,noarchive" />
+    <title>Fitness Tracker</title>
+    <link rel="stylesheet" href="./styles.css?v=7" />
+    <link rel="stylesheet" href="./enhancements.css?v=2" />
+    <link rel="stylesheet" href="./visualiser.css?v=1" />
+  </head>
+  <body>
+    <section id="auth-gate" class="vault-gate" aria-live="polite">
+      <div class="vault-card">
+        <div class="lock-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" aria-hidden="true">
+            <circle
+              cx="16"
+              cy="16"
+              r="14"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            />
+            <path
+              d="M4 17h6l3-6 4 12 3-7h8"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            />
+          </svg>
+        </div>
+        <p class="eyebrow">Your private health history</p>
+        <h1 class="gate-title">Fitness Tracker</h1>
+        <p>Connect to your saved measurements and workouts.</p>
+        <div id="setup-problems" hidden></div>
+        <div id="token-setup" class="token-setup">
+          <p class="token-step">
+            <strong>1.</strong> Open <code>TRACKER_TOKEN.txt</code> in the
+            private repository and copy its contents.
+          </p>
+          <a
+            id="saved-token-link"
+            class="file-button github-link"
+            href="#"
+            target="_blank"
+            rel="noopener"
+            >Open saved token on GitHub</a
+          >
+          <p class="compact">
+            For initial setup or token replacement:
+            <a
+              id="create-token-link"
+              href="https://github.com/settings/personal-access-tokens/new"
+              target="_blank"
+              rel="noopener"
+              >create a fine-grained token</a
+            >.
+          </p>
+          <p class="token-step"><strong>2.</strong> Paste the token.</p>
+          <label class="token-field"
+            ><span>GitHub token</span
+            ><input
+              id="github-token"
+              type="password"
+              inputmode="text"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              placeholder="github_pat_…"
+          /></label>
+          <label class="remember-row"
+            ><input id="remember-token" type="checkbox" checked /><span
+              >Remember on this browser</span
+            ></label
+          >
+          <button id="connect-github" type="button" class="github-signin">
+            Connect GitHub
+          </button>
+          <p id="auth-status" class="status compact" role="status"></p>
+        </div>
+        <div id="auth-loading" class="auth-loading" hidden>
+          <div class="large-dot-spinner" aria-hidden="true">
+            <i></i><i></i><i></i>
+          </div>
+          <p id="auth-loading-status" class="status" role="status">
+            Connecting to GitHub…
+          </p>
+          <button
+            id="auth-forget-saved"
+            type="button"
+            class="secondary compact-button"
+          >
+            Forget saved token
+          </button>
+        </div>
       </div>
-      <div id="auth-loading" class="auth-loading" hidden>
-        <div class="large-dot-spinner" aria-hidden="true"><i></i><i></i><i></i></div>
-        <p id="auth-loading-status" class="status" role="status">Connecting to GitHub…</p>
-        <button id="auth-forget-saved" type="button" class="secondary compact-button">Forget saved token</button>
+    </section>
+
+    <div id="app-shell" hidden>
+      <nav class="primary-nav" aria-label="Main navigation">
+        <div class="nav-brand">
+          <svg viewBox="0 0 32 32" aria-hidden="true">
+            <circle
+              cx="16"
+              cy="16"
+              r="14"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            />
+            <path
+              d="M4 17h6l3-6 4 12 3-7h8"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            /></svg
+          ><span>Fitness<br />Tracker</span>
+        </div>
+        <button type="button" data-page="summary" aria-current="page">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 19V9m8 10V4m8 15v-7" /></svg
+          ><span>Summary</span></button
+        ><button type="button" data-page="body">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="5" r="2.5" />
+            <path d="m7 21 1-8-3-3m12 11-1-8 3-3M8 10h8M12 14v7" /></svg
+          ><span>Body</span></button
+        ><button type="button" data-page="training">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m4 8 4-4m8 16 4-4M2 10l8-8m4 20 8-8M7 7l10 10" /></svg
+          ><span>Training</span></button
+        ><button type="button" data-page="explore">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 18 8 9l6 5 7-10M3 21h18" />
+            <circle cx="8" cy="9" r="1" />
+            <circle cx="14" cy="14" r="1" /></svg
+          ><span>Explore</span></button
+        ><button type="button" data-page="data">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3v12m-4-8 4-4 4 4M4 15v5h16v-5" /></svg
+          ><span>Data</span></button
+        ><span class="nav-footnote">Your data. Your perspective.</span>
+      </nav>
+      <div class="workspace">
+        <header class="site-header">
+          <div>
+            <p class="app-name">Fitness Tracker</p>
+            <h1 id="page-title">Summary</h1>
+            <p id="page-subtitle" class="subtitle">
+              Your measurements, in perspective.
+            </p>
+          </div>
+          <div class="header-actions">
+            <span id="sync-state" role="status">Connecting…</span
+            ><button
+              type="button"
+              data-page="data"
+              class="add-data-button"
+              aria-label="Add data"
+            >
+              ＋ <span>Add data</span>
+            </button>
+          </div>
+        </header>
+        <main>
+          <section
+            class="page-view"
+            id="page-summary"
+            data-page-panel="summary"
+          >
+            <div id="summary-content"></div>
+          </section>
+          <section
+            class="page-view"
+            id="page-body"
+            data-page-panel="body"
+            hidden
+          >
+            <div id="body-content"></div>
+          </section>
+          <section
+            class="page-view"
+            id="page-training"
+            data-page-panel="training"
+            hidden
+          >
+            <div id="training-content"></div>
+          </section>
+          <section
+            class="page-view"
+            id="page-explore"
+            data-page-panel="explore"
+            hidden
+          >
+            <div id="explore-content"></div>
+          </section>
+          <section
+            class="page-view"
+            id="page-data"
+            data-page-panel="data"
+            hidden
+          >
+            <div
+              class="segmented data-tabs"
+              role="group"
+              aria-label="Data tools"
+            >
+              <button type="button" data-data-tab="import" aria-pressed="true">
+                Import</button
+              ><button
+                type="button"
+                data-data-tab="records"
+                aria-pressed="false"
+              >
+                Records</button
+              ><button
+                type="button"
+                data-data-tab="settings"
+                aria-pressed="false"
+              >
+                Sources & settings
+              </button>
+            </div>
+            <section class="card" id="import-card" data-data-panel="import">
+              <div class="card-heading">
+                <div>
+                  <p class="eyebrow">Add to your history</p>
+                  <h2>Import a file</h2>
+                </div>
+              </div>
+              <p>
+                Choose a TANITA or ACCUNIQ report, Apple Health
+                <code>export.xml</code>, or the original Apple Health export
+                ZIP.
+              </p>
+              <div class="actions wrap">
+                <label id="choose-file-button" class="file-button"
+                  ><input
+                    id="import-file"
+                    type="file"
+                    accept="application/pdf,image/*,text/xml,application/xml,.xml,.zip,application/zip"
+                  /><span>Choose data file</span></label
+                >
+              </div>
+              <a
+                id="tanita-scanner-link"
+                class="scanner-link"
+                href="./tanita-scan.html"
+                target="_blank"
+                rel="noopener"
+                >Scan multiple TANITA receipts ›</a
+              >
+              <span id="detected-source" class="badge detected" hidden></span>
+              <p
+                id="import-status"
+                class="status import-status"
+                aria-live="polite"
+              ></p>
+              <p id="ocr-notice" class="ocr-notice" role="status" hidden></p>
+              <div id="body-review-workspace" class="body-review-workspace">
+                <div id="body-preview" class="preview" hidden></div>
+                <div id="body-review" hidden>
+                  <h3>Review body-composition data before saving</h3>
+                  <p id="body-source-summary" class="muted"></p>
+                  <div id="body-warnings"></div>
+                  <form id="body-form" class="field-grid"></form>
+                  <div class="actions action-with-status">
+                    <button id="save-body" type="button">
+                      Save measurement</button
+                    ><span
+                      id="save-body-status"
+                      class="action-status"
+                      role="status"
+                    ></span>
+                  </div>
+                  <details>
+                    <summary>Extraction diagnostic text</summary>
+                    <pre id="body-raw"></pre>
+                  </details>
+                </div>
+              </div>
+              <div id="health-review" hidden>
+                <h3>Review Apple Health import</h3>
+                <div id="health-summary"></div>
+                <div class="actions action-with-status">
+                  <button id="save-health" type="button">Save workouts</button
+                  ><span
+                    id="save-health-status"
+                    class="action-status"
+                    role="status"
+                  ></span>
+                </div>
+              </div>
+            </section>
+
+            <section
+              class="card"
+              id="logs-card"
+              data-data-panel="records"
+              hidden
+            >
+              <div class="card-heading">
+                <div><h2>All records</h2></div>
+                <span class="badge" id="log-count">0</span>
+              </div>
+              <div class="actions wrap">
+                <button id="sync-now" type="button">Sync now</button
+                ><button id="export-logs" type="button" class="secondary">
+                  Export JSONL
+                </button>
+              </div>
+              <p id="log-status" class="status" aria-live="polite"></p>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Source</th>
+                      <th>Type</th>
+                      <th>Summary</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="logs-body"></tbody>
+                </table>
+              </div>
+            </section>
+            <section class="card" data-data-panel="settings" hidden>
+              <h2>Data sources</h2>
+              <div id="data-source-summary" class="data-sources"></div>
+              <div id="data-quality"></div>
+              <details>
+                <summary>Connection</summary>
+                <p>
+                  <strong id="repo-visibility">Private repository</strong> ·
+                  <span id="repo-name"></span>
+                </p>
+                <p id="github-user"></p>
+                <button id="signout-github" type="button" class="secondary">
+                  Log out
+                </button>
+              </details>
+              <details class="danger-zone">
+                <summary>Delete records</summary>
+                <p>Remove all saved measurements and workouts.</p>
+                <button id="clear-logs" type="button" class="danger">
+                  Delete all logs
+                </button>
+              </details>
+            </section>
+          </section>
+        </main>
+        <footer><p>Fitness Tracker · Measurements in context</p></footer>
       </div>
     </div>
-  </section>
 
-  <div id="app-shell" hidden>
-    <header class="site-header">
-      <div><p class="eyebrow">GitHub-synced · phone friendly</p><h1>Fitness Tracker</h1><p class="subtitle">Automatic import for TANITA, ACCUNIQ, and Apple Health exports.</p></div>
-      <div class="header-actions"><span id="github-user" class="badge"></span><span id="sync-state" class="badge">Synced</span><div class="header-tools"><a id="tanita-scanner-link" class="file-button" href="./tanita-scan.html" target="_blank" rel="noopener" title="Open the receipt scanner in a new tab">Receipts to PDF</a><button id="signout-github" type="button" class="secondary">Log out</button></div></div>
-    </header>
-    <main>
-      <section class="notice secure-notice"><strong id="repo-visibility">Private repository</strong> · <code id="repo-name"></code>. Logs are stored in monthly JSON files under <code>data/events/</code>.</section>
-      <section class="card" id="import-card">
-        <div class="card-heading"><div><p class="eyebrow">Automatic source detection</p><h2>Import gym data</h2></div><span class="badge">PDF / image / XML / ZIP</span></div>
-        <p>Choose a TANITA or ACCUNIQ report, Apple Health <code>export.xml</code>, or the original Apple Health export ZIP.</p>
-        <div class="actions wrap">
-          <label id="choose-file-button" class="file-button"><input id="import-file" type="file" accept="application/pdf,image/*,text/xml,application/xml,.xml,.zip,application/zip"><span>Choose data file</span></label>
+    <dialog
+      id="insight-dialog"
+      class="insight-dialog"
+      aria-labelledby="insight-title"
+    >
+      <div class="dialog-heading">
+        <div>
+          <h2 id="insight-title">Record</h2>
+          <p id="insight-subtitle" class="compact"></p>
         </div>
-        <span id="detected-source" class="badge detected" hidden></span>
-        <p id="import-status" class="status import-status" aria-live="polite"></p>
-        <p id="ocr-notice" class="ocr-notice" role="status" hidden></p>
-        <div id="body-review-workspace" class="body-review-workspace">
-          <div id="body-preview" class="preview" hidden></div>
-          <div id="body-review" hidden>
-            <h3>Review body-composition data before saving</h3><p id="body-source-summary" class="muted"></p><div id="body-warnings"></div>
-            <form id="body-form" class="field-grid"></form>
-            <div class="actions action-with-status"><button id="save-body" type="button">Save body-composition log to GitHub</button><span id="save-body-status" class="action-status" role="status"></span></div>
-            <details><summary>Extraction diagnostic text</summary><pre id="body-raw"></pre></details>
-          </div>
+        <button
+          type="button"
+          id="insight-close"
+          class="secondary compact-button"
+          aria-label="Close record details"
+        >
+          Done
+        </button>
+      </div>
+      <div id="insight-content"></div>
+      <div class="dialog-footer">
+        <button type="button" id="insight-edit" class="secondary">
+          Edit record
+        </button>
+      </div>
+    </dialog>
+    <dialog
+      id="record-dialog"
+      class="record-dialog"
+      aria-labelledby="record-title"
+    >
+      <div class="dialog-heading">
+        <div>
+          <p class="eyebrow">Full record</p>
+          <h2 id="record-title">Record</h2>
         </div>
-        <div id="health-review" hidden><h3>Review Apple Health import</h3><div id="health-summary"></div><div class="actions action-with-status"><button id="save-health" type="button">Save imported workouts to GitHub</button><span id="save-health-status" class="action-status" role="status"></span></div></div>
-      </section>
-
-      <section class="card info-grid">
-        <div><p class="eyebrow">TANITA DC-360</p><h3>Scanned receipt</h3><p>Uses Google Cloud Vision word geometry for the printed values and image geometry for the four independent indicator bars.</p></div>
-        <div><p class="eyebrow">ACCUNIQ</p><h3>Body-composition report</h3><p>Uses the report text layer when available and Google Cloud Vision when OCR is needed.</p></div>
-        <div><p class="eyebrow">Apple Health</p><h3>Upload the ZIP directly</h3><p>Imports strength workouts with all heart-rate records included in the export. Re-importing the full export only updates changed workout IDs.</p></div>
-      </section>
-
-      <section class="card" id="logs-card">
-        <div class="card-heading"><div><p class="eyebrow">Private GitHub repository</p><h2>Logs</h2></div><span class="badge" id="log-count">0</span></div>
-        <div class="actions wrap"><button id="sync-now" type="button">Sync now</button><button id="export-logs" type="button" class="secondary">Export JSONL</button><button id="clear-logs" type="button" class="danger">Delete all logs</button></div>
-        <p id="log-status" class="status" aria-live="polite"></p>
-        <div class="table-wrap"><table><thead><tr><th>Date</th><th>Source</th><th>Type</th><th>Summary</th><th></th></tr></thead><tbody id="logs-body"></tbody></table></div>
-      </section>
-    </main>
-    <footer><p>Fitness data is stored in the private GitHub repository.</p></footer>
-  </div>
-
-  <dialog id="record-dialog" class="record-dialog">
-    <div class="dialog-heading"><div><p class="eyebrow">Full record</p><h2 id="record-title">Record</h2></div><button id="record-close" type="button" class="secondary compact-button" aria-label="Close record editor">Close</button></div>
-    <p class="muted compact">Edit values below, then save. Record IDs and schema versions are kept stable automatically.</p>
-    <div id="record-form" class="record-form"></div>
-    <div class="dialog-footer"><p id="record-status" class="status" role="status"></p><button id="record-save" type="button">Save changes to GitHub</button></div>
-  </dialog>
-  <script type="module" src="./app.js?v=12"></script>
-  <script type="module" src="./src/ui-enhancements.js?v=3"></script>
-</body>
+        <button
+          id="record-close"
+          type="button"
+          class="secondary compact-button"
+          aria-label="Close record editor"
+        >
+          Close
+        </button>
+      </div>
+      <p class="muted compact">
+        Edit values below, then save. Record IDs and schema versions are kept
+        stable automatically.
+      </p>
+      <div id="record-form" class="record-form"></div>
+      <div class="dialog-footer">
+        <p id="record-status" class="status" role="status"></p>
+        <button id="record-save" type="button">Save changes</button>
+      </div>
+    </dialog>
+    <script type="module" src="./app.js?v=13"></script>
+    <script type="module" src="./src/ui-enhancements.js?v=4"></script>
+  </body>
 </html>

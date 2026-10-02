@@ -348,8 +348,9 @@ function parseBioelectrical(text) {
 function parsePhysique(text) {
   if (!/PHYSIQUE\s+RATING/.test(text)) return null;
   const section = findSection(text, [/PHYSIQUE\s+RATING/], [/BIOELECTRICAL/]);
-  const m = section.match(/\b(OBESE|STANDARD|ATHLETIC|THIN|MUSCULAR|UNDEREXERCISED)\b/);
-  return m ? m[1] : null;
+  const value = section.replace(/^\s*PHYSIQUE\s+RATING\s*[:=]?\s*/, '')
+    .replace(/\s*[\\*]+\s*$/g, '').replace(/\s+/g, ' ').trim();
+  return value || null;
 }
 
 function parseTanitaText(rawText, { sourceName = '' } = {}) {

@@ -64,7 +64,7 @@ async function compressedPayload(file, entry) {
 }
 
 async function fflateRawStream(blob) {
-  const mod = await import('https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js');
+  const mod = await import('../vendor/fflate.js');
   let offset = 0;
   let cancelled = false;
   let target;

@@ -1,4 +1,4 @@
-import { openAppleHealthExportZip } from './zip-reader.js?v=2';
+import { openAppleHealthExportZip } from './zip-reader.js?v=3';
 
 const TARGET_WORKOUT = 'HKWorkoutActivityTypeTraditionalStrengthTraining';
 const HEART_RATE = 'HKQuantityTypeIdentifierHeartRate';

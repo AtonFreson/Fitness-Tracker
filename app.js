@@ -1,5 +1,5 @@
 import { CONFIG, configProblems } from './config.js';
-import { importUploadedFile } from './src/import-router.js?v=7';
+import { importUploadedFile } from './src/import-router.js?v=8';
 import {
   saveLog,
   saveLogs,
@@ -32,8 +32,10 @@ import {
   cropIndicatorCanvas,
   preserveReviewedIndicators,
 } from './src/tanita-indicator-review.js?v=2';
-import { cleanPhysiqueRating } from './src/text-field-repair.js?v=2';
+import { cleanPhysiqueRating } from './src/text-field-repair.js?v=3';
 import { mergeHealthWorkouts } from './src/health-records.js';
+import { createVisualiser } from './src/visualiser.js?v=1';
+import { readableFieldLabel, recordEditorPathVisible } from './src/record-view.js';
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -55,6 +57,7 @@ let currentPreviewCanvas = null;
 let indicatorRegions = {};
 let logsCache = [];
 let editingLog = null;
+let visualiser = null;
 
 const commonBodyFields = [
   ['measured_at_local', 'Measured at', 'text'],
@@ -472,6 +475,7 @@ function summaryForLog(log) {
 
 function renderLogs(logs) {
   logsCache = sortLogs(logs).reverse();
+  visualiser?.update(logsCache);
   $('#log-count').textContent = String(logsCache.length);
 
   const body = $('#logs-body');
@@ -667,7 +671,8 @@ function openRecordEditor(log) {
     field.className = 'field record-field';
 
     const label = document.createElement('label');
-    label.textContent = entry.path;
+    label.textContent = readableFieldLabel(entry.path);
+    field.hidden = !recordEditorPathVisible(entry.path);
 
     let input;
     if (entry.kind === 'json') {
@@ -751,6 +756,7 @@ $('#signout-github').addEventListener('click', () => {
   clearAuth();
   signedInUser = null;
   resetImportReview();
+  renderLogs([]);
   showAuthGate('GitHub token forgotten on this browser. Your repository data is unchanged.');
 });
 
@@ -893,4 +899,5 @@ $('#clear-logs').addEventListener('click', async () => {
   }
 });
 
+visualiser = createVisualiser({ onEditRecord: openRecordEditor });
 await bootstrapAuth();
