@@ -1,4 +1,4 @@
-import { importAppleHealthFile } from "./health-import.js?v=7";
+import { importAppleHealthFile } from "./health-import.js?v=8";
 import { remoteFile } from "./health-file-bridge.js";
 
 const reads = new Map();

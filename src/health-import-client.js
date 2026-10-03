@@ -1,4 +1,4 @@
-import { importAppleHealthFile } from "./health-import.js?v=7";
+import { importAppleHealthFile } from "./health-import.js?v=8";
 
 export function importHealthInWorker(file, { onProgress, signal } = {}) {
   if (signal?.aborted)
@@ -7,7 +7,7 @@ export function importHealthInWorker(file, { onProgress, signal } = {}) {
     return importAppleHealthFile(file, { onProgress });
   return new Promise((resolve, reject) => {
     const worker = new Worker(
-      new URL("./health-import-worker.js?v=3", import.meta.url),
+      new URL("./health-import-worker.js?v=4", import.meta.url),
       { type: "module" },
     );
     const finish = (error, logs) => {

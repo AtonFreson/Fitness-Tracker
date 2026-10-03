@@ -1,3 +1,6 @@
+import { fitBodyModel, modelValue, MODEL_METRICS } from './body-model.js';
+import { workoutLabel } from './workout-details.js';
+import { workoutExtras, mountWorkoutExtras } from './workout-view.js';
 import {
   DAY,
   SOURCES,
@@ -18,14 +21,13 @@ import {
   pairedMetrics,
   correlation,
   devicePairs,
-  projectTrend,
   compositionScenario,
   workoutBuckets,
   heartRateSeries,
   heartRateDistribution,
   qualitativeHistory,
   recordIssues,
-} from "./analytics.js";
+} from "./analytics.js?v=2";
 import {
   escapeHtml as esc,
   formatNumber as num,
@@ -72,6 +74,8 @@ export function createVisualiser({ onEditRecord } = {}) {
     reference: false,
     compareMetric: "weight_kg",
     trainingField: "minutes",
+    trainingType: "all",
+    noiseScale: 1,
     dataTab: "import",
     customStart: "",
     customEnd: "",
@@ -87,7 +91,7 @@ export function createVisualiser({ onEditRecord } = {}) {
   const bounds = () =>
     state.customStart && state.customEnd
       ? { start: dayStamp(state.customStart), end: dayStamp(state.customEnd) }
-      : rangeBounds(state.range, logs);
+      : rangeBounds(state.range, logs.filter(l=>l.kind===specFor(state.metric)?.kind));
   const bodies = () =>
     logs
       .filter((l) => l.kind === "body_composition")
@@ -146,7 +150,7 @@ export function createVisualiser({ onEditRecord } = {}) {
         .slice(0, limit)
         .map((log) => {
           const body = log.kind === "body_composition",
-            title = body ? sourceName(log.source?.type) : "Strength training";
+            title = body ? sourceName(log.source?.type) : workoutLabel(log);
           const subtitle = body
             ? `${num(log.metrics?.weight_kg)} kg · ${num(log.metrics?.fat_percent)}% body fat`
             : `${num(log.duration_minutes, 0)} min · ${num(log.active_energy_kcal, 0)} kcal`;
@@ -204,7 +208,7 @@ export function createVisualiser({ onEditRecord } = {}) {
             : "<p>Add a body report to see composition trends.</p>"
         }
       </section>
-      <section class="panel summary-training">${heading("Training", "Details", "training")}<p class="overline">Last 28 days · recorded sessions</p><div class="stats-row">${stat(num(sessions, 0), "Sessions")}${stat(num(minutes / 60), "Time", "hr")}${stat(energy ? num(energy, 0) : "—", "Active energy", "kcal")}</div><div id="summary-training-chart"></div><p class="chart-note">${date(now - 27 * DAY)}–${date(now)} · strength training</p></section>
+      <section class="panel summary-training">${heading("Training", "Details", "training")}<p class="overline">Last 28 days · recorded sessions</p><div class="stats-row">${stat(num(sessions, 0), "Sessions")}${stat(num(minutes / 60), "Time", "hr")}${stat(energy ? num(energy, 0) : "—", "Active energy", "kcal")}</div><div id="summary-training-chart"></div><p class="chart-note">${date(now - 27 * DAY)}–${date(now)} · all recorded workouts</p></section>
       <section class="panel summary-reference">${heading("Your reference", "All measurements", "body")}${metricRows(
         catalog.filter((s) =>
           [
@@ -336,15 +340,16 @@ export function createVisualiser({ onEditRecord } = {}) {
     });
   }
   function training() {
-    const all = workouts();
+    const types = [...new Set(workouts().map(l=>l.workout_type))];
+    const all = workouts().filter(l=>state.trainingType==="all"||l.workout_type===state.trainingType);
     if (!all.length) {
       root().innerHTML = empty(
         "Your training history",
-        "Import an Apple Health export to explore strength workouts and heart rate.",
+        "Import an Apple Health export to explore workouts, routes and heart rate.",
       );
       return;
     }
-    const range = rangeBounds(state.trainingRange, logs),
+    const range = rangeBounds(state.trainingRange, all),
       selected = all.filter(
         (l) =>
           dayStamp(logDate(l)) >= range.start &&
@@ -366,7 +371,7 @@ export function createVisualiser({ onEditRecord } = {}) {
     const heatStart = Math.max(range.start, range.end - 90 * DAY),
       heatDays = [];
     for (let t = heatStart; t <= range.end; t += DAY) heatDays.push(t);
-    root().innerHTML = `${ranges(state.trainingRange, "training-range")}<div class="training-grid"><section class="panel">${heading("Recorded training")}<p class="overline">${date(range.start)}–${date(range.end, true)}</p><div class="stats-row">${stat(num(selected.length, 0), "Sessions")}${stat(num(minutes / 60), "Duration", "hr")}${stat(
+    root().innerHTML = `${ranges(state.trainingRange, "training-range")}<label class="select-label training-type-filter"><span>Activity</span><select id="training-type"><option value="all">All workouts</option>${types.map(type=>`<option value="${esc(type)}" ${state.trainingType===type?"selected":""}>${esc(workoutLabel({workout_type:type}))}</option>`).join("")}</select></label><div class="training-grid"><section class="panel">${heading("Recorded training")}<p class="overline">${date(range.start)}–${date(range.end, true)}</p><div class="stats-row">${stat(num(selected.length, 0), "Sessions")}${stat(num(minutes / 60), "Duration", "hr")}${stat(
       energy.length
         ? num(
             energy.reduce((n, l) => n + l.active_energy_kcal, 0),
@@ -375,7 +380,7 @@ export function createVisualiser({ onEditRecord } = {}) {
         : "—",
       "Active energy",
       "kcal",
-    )}</div><p class="panel-note">Strength sessions only. Active energy is the recorded estimate; session time does not measure lifting volume.</p></section>
+    )}</div><p class="panel-note">${energy.length} of ${selected.length} sessions include active energy. Calories are recorded estimates; session time does not measure lifting volume.</p></section>
       <section class="panel">${heading("Consistency")}<p class="overline">${date(heatStart)}–${date(range.end)} · each square is a day</p><div class="heatmap">${heatDays
         .map((t) => {
           const a = days.get(t) || [];
@@ -402,6 +407,7 @@ export function createVisualiser({ onEditRecord } = {}) {
           "",
         )}</div><div id="training-bars"></div><p class="panel-note">Empty bars mean no imported sessions. The last interval may be incomplete.</p><div id="training-selection"></div></section>
       <section class="panel training-sessions">${heading("Sessions")}<p class="overline">${selected.length} in this period</p>${recordRows(selected, 100)}</section></div>`;
+    $("#training-type").addEventListener("change",e=>{state.trainingType=e.target.value;render();});
     barChart($("#training-bars"), buckets, {
       field: state.trainingField,
       unit: { minutes: "min", energy: "kcal", count: "sessions" }[
@@ -440,13 +446,7 @@ export function createVisualiser({ onEditRecord } = {}) {
       );
       return;
     }
-    const projectable = [
-      "weight_kg",
-      "fat_percent",
-      "fat_mass_kg",
-      "ffm_kg",
-      "muscle_mass_kg",
-    ];
+    const projectable = MODEL_METRICS;
     const choices =
       state.mode === "model"
         ? catalog.filter((s) => projectable.includes(s.key))
@@ -462,7 +462,7 @@ export function createVisualiser({ onEditRecord } = {}) {
       state.metric = choices[0].key;
     const spec = specFor(state.metric);
     const groups = [...new Set(choices.map((s) => s.group))];
-    const control = sourceControl(spec, state.mode !== "trend");
+    const control = sourceControl(spec, state.mode === "compare");
     root().innerHTML = `<div class="segmented explore-mode" role="group" aria-label="Analysis view">${[
       ["trend", "Trends"],
       ["compare", "Compare"],
@@ -632,17 +632,20 @@ export function createVisualiser({ onEditRecord } = {}) {
     });
   }
   function modelView(spec) {
-    const ps = pointsFor(logs, spec, { source: state.source }),
-      projection = projectTrend(ps),
-      last = ps.at(-1);
-    const allBody = bodies().filter((l) => l.source.type === state.source),
-      base = allBody.at(-1);
-    const scenarioFat = state.scenarioFat ?? base?.metrics?.fat_percent ?? 20;
-    const estimate = compositionScenario(base, scenarioFat, state.scenarioLean);
-    $("#explore-view").innerHTML =
-      `<div class="model-grid"><section class="panel">${heading("If the recent trend continues")}<p class="overline">${esc(sourceName(state.source))} · ${esc(spec.label)}</p>${projection.reason ? `<div class="model-empty"><strong>More history needed</strong><p>${esc(projection.reason)}</p></div>` : `<div class="hero-reading"><strong>${signed(projection.slopePerWeek, 2)}<small>${esc(spec.unit === "%" ? "pp" : spec.unit)}/week</small></strong><span>Fitted change · ${projection.n} measurement days</span></div><div id="projection-chart" class="chart-host"></div><div class="projection-result"><span>28-day extrapolation</span><strong>${num(projection.points.at(-1).v)} ${esc(spec.unit)}</strong><small>${num(projection.points.at(-1).low)}–${num(projection.points.at(-1).high)} ${esc(spec.unit)} prediction interval</small></div>`}
-      <details><summary>How this projection works</summary><p>One device, daily medians, and a straight-line fit to the last 90 days. Requires 6 measurement days spanning at least 28 days, a reading within 30 days, and no gap over 45 days.</p><p>The shaded 95% prediction interval describes statistical variability under that model. It does not measure device accuracy or guarantee an outcome. It does not account for future changes in diet, training or hydration.</p></details></section>
-      <section class="panel">${heading("Composition scenario")}<p class="overline">Based on ${esc(sourceName(state.source))} · ${base ? date(dayStamp(logDate(base)), true) : "no reading"}</p><p class="panel-note">Explore a possible composition by changing fat percentage and assumed fat-free mass. This is arithmetic, not a forecast or a recommended goal.</p>
+    const model = fitBodyModel(logs,{source:state.source,noiseScale:state.noiseScale});
+    const history=model.history.map(p=>({...p,...modelValue(p.state,spec.key)}));
+    const forecast=model.forecast.map(p=>({...p,...modelValue(p.state,spec.key)}));
+    const allBody=bodies().filter(l=>state.source==='all'?l.source.type===(model.reference==='ACCUNIQ'?'accuniq_report':'tanita_receipt'):l.source.type===state.source),base=allBody.at(-1);
+    const scenarioFat=state.scenarioFat??base?.metrics?.fat_percent??20;
+    const last=history.at(-1), future=forecast.at(-1);
+    $('#explore-view').innerHTML =
+      `<div class="model-grid"><section class="panel">${heading("Estimated body trend")}<p class="overline">${esc(model.reference||sourceName(state.source))} reference · ${esc(spec.label)}</p>
+      ${last?`<div class="hero-reading"><strong>${num(last.v)}<small>${esc(spec.unit)}</small></strong><span>Estimated at last measurement · ${date(last.t,true)}</span></div><div id="projection-chart" class="chart-host"></div>${legend(model.sources||[])}<p class="chart-note">Purple: estimated composition · shading: model uncertainty</p>`:''}
+      ${future?`<div class="projection-result"><span>Conditional estimate in 28 days</span><strong>${num(future.v)} ${esc(spec.unit)}</strong><small>${num(future.low)}–${num(future.high)} ${esc(spec.unit)} model uncertainty</small></div>`:`<p class="panel-note">${esc(model.reason)}</p>`}
+      <details class="model-assumptions"><summary>Model & measurement assumptions</summary><p>A Kalman state model follows fat mass, fat-free mass and their rates of change. Total weight and fat percentage are derived from the same state. Rates gradually slow over a 28-day time scale unless new measurements support them.</p><p>ACCUNIQ composition readings receive more weight: assumed noise is 1.5 percentage points of body fat versus 3 for TANITA; scale noise is 0.5 kg for both. These are adjustable starting assumptions, not manufacturer accuracy specifications.</p><label>Measurement noise<select id="model-noise"><option value="0.75" ${state.noiseScale===.75?'selected':''}>Lower · follow readings more closely</option><option value="1" ${state.noiseScale===1?'selected':''}>Standard</option><option value="1.5" ${state.noiseScale===1.5?'selected':''}>Higher · trust individual readings less</option></select></label>
+      <p>${model.blended?'Separate TANITA offsets are estimated relative to ACCUNIQ, with uncertainty; the model does not treat a machine change as tissue change.':'This view uses the selected device only.'} ${model.bias?`Estimated TANITA fat offset: ${signed(model.bias.fatKg)} kg (model σ ${num(model.bias.fatSigma)} kg).`:''}</p>
+      <p>One reading per device per day; unusual readings are downweighted. ${model.downweighted||0} readings downweighted. Shading is an approximate 95% model interval with an added uncertainty floor. It is not externally validated and cannot remove shared BIA bias, hydration effects or OCR errors.</p><p>This is a measurement-driven state model. A physiological energy-balance simulation would also need food intake and daily expenditure; workout calories alone do not supply those inputs. Fat-free mass includes water and other tissue, not just muscle.</p></details></section>
+      <section class="panel">${heading("Composition scenario")}<p class="overline">Based on ${esc(sourceName(base?.source.type))} · ${base ? date(dayStamp(logDate(base)), true) : "no reading"}</p><p class="panel-note">Explore a possible composition by changing fat percentage and assumed fat-free mass. This is arithmetic, not a forecast or a recommended goal.</p>
       <label class="scenario-control"><span>Body fat <output id="scenario-fat-value">${num(scenarioFat)}%</output></span><input type="range" id="scenario-fat" min="1" max="60" step="0.1" value="${scenarioFat}" aria-label="Scenario body fat percentage"></label>
       <label class="scenario-control"><span>Fat-free mass change <output id="scenario-lean-value">${signed(state.scenarioLean)} kg</output></span><input type="range" id="scenario-lean" min="-5" max="5" step="0.1" value="${state.scenarioLean}" aria-label="Scenario fat-free mass change in kilograms"></label><div id="scenario-result"></div><p class="panel-note">Fat-free mass includes muscle, water and other tissue. No regional body shape is inferred.</p></section></div>`;
     const showScenario = () => {
@@ -660,33 +663,17 @@ export function createVisualiser({ onEditRecord } = {}) {
     $("#scenario-fat").addEventListener("input", showScenario);
     $("#scenario-lean").addEventListener("input", showScenario);
     showScenario();
-    if (!projection.reason)
-      draw(
-        $("#projection-chart"),
-        [
-          {
-            key: state.source,
-            label: "Observed daily median",
-            points: projection.history,
-          },
-          {
-            key: state.source,
-            label: "Linear projection",
-            points: projection.points,
-            dashed: true,
-            dots: false,
-          },
-        ],
-        {
-          title: "Conditional trend projection",
-          unit: spec.unit,
-          start: todayStamp() - 90 * DAY,
-          end: todayStamp() + 28 * DAY,
-          band: projection.points,
-          bandColor: SOURCES[state.source]?.color,
-        },
-      );
+    $('#model-noise')?.addEventListener('change',e=>{state.noiseScale=Number(e.target.value);render();});
+    if(last) {
+      const start=Math.max(history[0].t,todayStamp()-180*DAY);
+      const observed=pointsFor(logs,spec,{source:state.source,start});
+      const series=[...new Set(observed.map(p=>p.source))].map(source=>({key:source,label:sourceName(source)+' · recorded',points:observed.filter(p=>p.source===source),opacity:.4}));
+      series.push({key:'model',label:'Estimated composition',color:'#6877ad',points:history.filter(p=>p.t>=start),dots:false});
+      if(forecast.length)series.push({key:'model',label:'Conditional prediction',color:'#6877ad',points:forecast,dashed:true,dots:false});
+      draw($('#projection-chart'),series,{title:'Body state model',unit:spec.unit,start,end:forecast.at(-1)?.t||last.t,band:[...history.filter(p=>p.t>=start),...forecast],bandColor:'#6877ad',onSelect:openRecord});
+    }
   }
+
   function data() {
     for (const section of document.querySelectorAll("[data-data-panel]"))
       section.hidden = section.dataset.dataPanel !== state.dataTab;
@@ -715,7 +702,7 @@ export function createVisualiser({ onEditRecord } = {}) {
       host = $("#insight-content");
     $("#insight-title").textContent =
       log.kind === "workout"
-        ? "Strength training"
+        ? workoutLabel(log)
         : sourceName(log.source?.type);
     $("#insight-subtitle").textContent =
       `${date(dayStamp(logDate(log)), true)} · ${logDate(log).slice(11, 16)}`;
@@ -729,9 +716,11 @@ export function createVisualiser({ onEditRecord } = {}) {
         dist = heartRateDistribution(log),
         others = workouts().filter((l) => l.id !== log.id);
       host.innerHTML = `<div class="stats-row">${stat(num(log.duration_minutes, 0), "Duration", "min")}${stat(num(log.active_energy_kcal, 0), "Active energy", "kcal")}${stat(num(hr?.average_bpm, 0), "Average HR", "bpm")}</div><section class="detail-section">${heading("Heart rate")}<p class="overline">${num(hr?.min_bpm, 0)}–${num(hr?.max_bpm, 0)} bpm · ${dist.points.length.toLocaleString()} samples</p><div id="session-chart" class="chart-host"></div><label class="select-label"><span>Compare another session</span><select id="session-compare"><option value="">None</option>${others.map((l) => `<option value="${esc(l.id)}">${date(dayStamp(logDate(l)), true)} · ${num(l.duration_minutes, 0)} min</option>`).join("")}</select></label><div id="session-comparison-note" class="panel-note"></div></section>
-      <section class="detail-section">${heading("Observed heart-rate distribution")}<p class="panel-note">${Math.round(dist.coverage * 100)}% of elapsed session covered by consecutive readings. Gaps over 60 seconds are excluded. These are bpm bands, not personalised training zones.</p><div class="hr-bins">${dist.bins.map((b, i) => `<div><span>${b.label} <small>bpm</small></span><i style="--portion:${dist.seconds ? (b.seconds / dist.seconds) * 100 : 0}%;--bin-color:${["#778ba0", "#4c92bb", "#528e78", "#bb854c", "#bf5964"][i]}"></i><strong>${num(b.seconds / 60)} <small>min</small></strong></div>`).join("")}</div></section>`;
+      <section class="detail-section">${heading("Observed heart-rate distribution")}<p class="panel-note">${Math.round(dist.coverage * 100)}% of elapsed session covered by consecutive readings. Gaps over 60 seconds are excluded. These are bpm bands, not personalised training zones.</p><div class="hr-bins">${dist.bins.map((b, i) => `<div><span>${b.label} <small>bpm</small></span><i style="--portion:${dist.seconds ? (b.seconds / dist.seconds) * 100 : 0}%;--bin-color:${["#778ba0", "#4c92bb", "#528e78", "#bb854c", "#bf5964"][i]}"></i><strong>${num(b.seconds / 60)} <small>min</small></strong></div>`).join("")}</div></section>${workoutExtras(log)}`;
+      let sessionDispose = () => {};
+      dialogDisposers.push(()=>sessionDispose());
       const drawSession = (comparison = null) => {
-        dialogDisposers.splice(0).forEach((fn) => fn());
+        sessionDispose();
         const series = [
           {
             key: "apple_health_export",
@@ -750,24 +739,24 @@ export function createVisualiser({ onEditRecord } = {}) {
               ]
             : []),
         ];
-        dialogDisposers.push(
-          lineChart($("#session-chart"), series, {
+        sessionDispose = lineChart($("#session-chart"), series, {
             title: "Session heart rate",
             unit: "bpm",
             time: false,
             maxGap: 1,
             xFormat: (t) => `${num(t, 0)} min`,
             start: 0,
-          }),
-        );
+          });
         $("#session-comparison-note").textContent = comparison
           ? `Pink: ${date(dayStamp(logDate(log)))}. Blue: ${date(dayStamp(logDate(comparison)))} · ${num(comparison.duration_minutes, 0)} min · ${num(comparison.heart_rate_bpm?.average_bpm, 0)} bpm average. Aligned by elapsed time from session start.`
           : "Time is elapsed from session start. Missing readings appear as gaps.";
+
       };
       $("#session-compare").addEventListener("change", (e) =>
         drawSession(others.find((l) => l.id === e.target.value)),
       );
       drawSession();
+      dialogDisposers.push(mountWorkoutExtras(host,log));
     } else {
       const fields = catalog.filter(
         (s) => s.kind === "body_composition" && metricValue(log, s) !== null,
@@ -849,6 +838,7 @@ export function createVisualiser({ onEditRecord } = {}) {
       render();
     } else if (d.mode) {
       state.mode = d.mode;
+      if(d.mode === "model")state.source="all";
       render();
     } else if (d.dataTab) {
       state.dataTab = d.dataTab;

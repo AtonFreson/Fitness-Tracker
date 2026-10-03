@@ -10,7 +10,15 @@ export function mergeHealthWorkouts(existing, incoming) {
     if (!old) return log;
     const a = old.heart_rate_bpm;
     const b = log.heart_rate_bpm;
-    if (!a && !b) return log;
+    const retained = {...old,...log};
+    for(const key of ['active_energy_kcal','basal_energy_kcal','distance_km','route','location','average_mets','temperature_c','elevation_ascended_m','indoor','time_zone','humidity_percent']) {
+      if(log[key] == null && old[key] != null) retained[key]=old[key];
+    }
+    if(!log.route?.points?.length && old.route?.points?.length)retained.route=old.route;
+    retained.health_metadata={...old.health_metadata,...log.health_metadata};
+    for(const key of ['workout_events','workout_statistics']) if(!log[key]?.length && old[key]?.length)retained[key]=old[key];
+    if(Number.isFinite(retained.active_energy_kcal)&&Number.isFinite(retained.basal_energy_kcal))retained.total_energy_kcal=retained.active_energy_kcal+retained.basal_energy_kcal;
+    if (!a && !b) return retained;
     const samples = new Map();
     for (const sample of [
       ...(Array.isArray(a?.samples) ? a.samples : []),
@@ -20,7 +28,7 @@ export function mergeHealthWorkouts(existing, incoming) {
       samples.set(key, sample);
     }
     return {
-      ...log,
+      ...retained,
       active_energy_kcal:
         log.active_energy_kcal ?? old.active_energy_kcal ?? null,
       heart_rate_bpm: {

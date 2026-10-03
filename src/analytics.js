@@ -131,6 +131,11 @@ export const WORKOUT_METRICS = [
     path: ["heart_rate_bpm", "min_bpm"],
   },
 ].map((x) => ({ ...x, group: "Training", kind: "workout" }));
+for (const [key,label,unit] of [
+  ['basal_energy_kcal','Session resting energy','kcal'],['total_energy_kcal','Session total energy','kcal'],
+  ['distance_km','Distance','km'],['average_mets','Average effort','MET'],['paused_minutes','Paused time','min'],
+  ['elevation_ascended_m','Elevation gain','m'],['temperature_c','Outdoor temperature','°C'],
+]) WORKOUT_METRICS.push({key,label,unit,path:[key],group:'Training',kind:'workout'});
 export const TRAINING_CONTEXT = [
   {
     key: "prior_training_minutes",
@@ -353,89 +358,6 @@ export function devicePairs(logs, spec, maxDays = 3) {
     }
   }
   return { pairs, medianDifference: median(pairs.map((p) => p.difference)) };
-}
-export function projectTrend(points, now = todayStamp(), horizon = 28) {
-  if (new Set(points.map((p) => p.source)).size > 1)
-    return { reason: "Choose one device for a projection." };
-  const recent = dailyMedians(
-    points.filter((p) => p.t >= now - 90 * DAY && p.t <= now),
-  );
-  if (recent.length < 6)
-    return {
-      reason: `Needs 6 measurement days in the last 90 days; ${recent.length} available.`,
-    };
-  const first = recent[0].t,
-    last = recent.at(-1).t;
-  if (last - first < 28 * DAY)
-    return { reason: "Needs at least 28 days of measurement history." };
-  if (now - last > 30 * DAY)
-    return { reason: "The latest measurement is over 30 days old." };
-  if (recent.some((p, i) => i > 0 && p.t - recent[i - 1].t > 45 * DAY))
-    return { reason: "A gap over 45 days makes this recent trend too sparse." };
-  const n = recent.length,
-    xy = recent.map((p) => ({ x: (p.t - first) / DAY, y: p.v }));
-  const mx = xy.reduce((s, p) => s + p.x, 0) / n,
-    my = xy.reduce((s, p) => s + p.y, 0) / n;
-  const sxx = xy.reduce((s, p) => s + (p.x - mx) ** 2, 0);
-  const slope = xy.reduce((s, p) => s + (p.x - mx) * (p.y - my), 0) / sxx,
-    intercept = my - slope * mx;
-  const residual = Math.sqrt(
-    xy.reduce((s, p) => s + (p.y - intercept - slope * p.x) ** 2, 0) / (n - 2),
-  );
-  const t95 = [
-    null,
-    null,
-    null,
-    null,
-    2.776,
-    2.571,
-    2.447,
-    2.365,
-    2.306,
-    2.262,
-    2.228,
-    2.201,
-    2.179,
-    2.16,
-    2.145,
-    2.131,
-    2.12,
-    2.11,
-    2.101,
-    2.093,
-    2.086,
-    2.08,
-    2.074,
-    2.069,
-    2.064,
-    2.06,
-    2.056,
-    2.052,
-    2.048,
-    2.045,
-    2.042,
-  ][Math.min(30, n - 2)];
-  const projection = [];
-  for (let d = 0; d <= Math.min(28, Math.max(1, horizon)); d += 1) {
-    const t = now + d * DAY,
-      x = (t - first) / DAY,
-      v = intercept + slope * x,
-      band = t95 * residual * Math.sqrt(1 + 1 / n + (x - mx) ** 2 / sxx);
-    projection.push({
-      t,
-      v,
-      low: v - band,
-      high: v + band,
-      source: recent[0].source,
-    });
-  }
-  return {
-    points: projection,
-    slopePerWeek: slope * 7,
-    n,
-    history: recent,
-    span: (last - first) / DAY,
-  };
 }
 export function compositionScenario(log, fatPercent, leanChange = 0) {
   const m = log?.metrics || {};

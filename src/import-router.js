@@ -1,4 +1,4 @@
-import { importHealthInWorker } from './health-import-client.js?v=3';
+import { importHealthInWorker } from './health-import-client.js?v=4';
 import { detectUploadKind, labelForSource } from './source-detection.js';
 
 async function importUploadedFile(file, { onStatus, onProgress } = {}) {

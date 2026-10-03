@@ -104,6 +104,24 @@ async function streamEntry(file, entry) {
   return fflateRawStream(payload);
 }
 
+function entryFile(file, entry) {
+  if (entry.flags & 1) throw new Error("Encrypted ZIP files are not supported.");
+  return {
+    name: entry.name, type: "application/xml", size: entry.uncompressedSize,
+    stream: () => new ReadableStream({
+      async start(controller) {
+        // This wrapper is used only for small linked GPX files.
+        this.reader = (await streamEntry(file, entry)).getReader();
+      },
+      async pull(controller) {
+        const {value,done} = await this.reader.read();
+        if(done) {controller.close();this.reader.releaseLock();} else controller.enqueue(value);
+      },
+      async cancel(reason) {await this.reader?.cancel(reason);},
+    }, {highWaterMark:0}),
+  };
+}
+
 async function openAppleHealthExportZip(file) {
   const entries = await readCentralDirectory(file);
   const candidates = entries.filter((entry) => /(^|\/)export\.xml$/i.test(entry.name) && !entry.name.endsWith('/'));
@@ -118,6 +136,13 @@ async function openAppleHealthExportZip(file) {
   const entry = candidates[0];
   if (entry.flags & 1) throw new Error('Encrypted ZIP files are not supported. Choose the original Apple Health export.');
   return {
+    openFile: async (path) => {
+      const relative = String(path).replace(/^\/+/, '');
+      if (relative.split('/').includes('..')) return null;
+      const base = entry.name.slice(0, entry.name.lastIndexOf('/') + 1);
+      const linked = entries.find(e => e.name === base + relative || e.name === relative);
+      return linked ? entryFile(file, linked) : null;
+    },
     name: entry.name,
     type: 'application/xml',
     size: entry.uncompressedSize,

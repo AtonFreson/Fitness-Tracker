@@ -1690,3 +1690,21 @@ footer p {
     animation-iteration-count: 1 !important;
   }
 }
+
+.route-toolbar {display:flex;gap:.45rem;flex-wrap:wrap;margin:12px 0}
+.route-toolbar button {padding:.45rem .75rem;font-size:.82rem}
+.route-canvas {position:relative;width:100%;height:270px;overflow:hidden;border-radius:12px;touch-action:none;cursor:grab}
+.route-canvas svg {display:block;width:100%;height:100%}
+.route-scrubber {width:100%;margin-top:14px;accent-color:#3185d6}
+.route-reading {display:block;font-size:.78rem;line-height:1.5;margin:8px 0;overflow-wrap:anywhere}
+.map-attribution {position:absolute;bottom:2px;right:3px;background:white;color:#334;padding:2px 4px;font-size:10px}
+.route-external {font-size:.85rem}
+.workout-events,.workout-raw {margin-top:20px;padding-top:16px;border-top:1px solid var(--border,#ddd)}
+.workout-events ol {list-style:none;padding:0}
+.workout-events li {display:flex;gap:16px;padding:8px 0;border-bottom:1px solid var(--border,#eee);font-size:.85rem}
+.workout-events time {min-width:65px;color:var(--muted)}
+.workout-raw dd {overflow-wrap:anywhere;max-width:100%}
+.training-type-filter {margin:16px 0}
+.model-assumptions {margin:16px 0}
+.model-assumptions label {display:flex;flex-direction:column;gap:8px;font-size:.85rem}
+.model-estimates {margin:14px 0}

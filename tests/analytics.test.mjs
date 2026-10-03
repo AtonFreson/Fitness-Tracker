@@ -11,7 +11,6 @@ import {
   latestReference,
   dayStamp,
   smoothPoints,
-  projectTrend,
   correlation,
   pairedMetrics,
   devicePairs,
@@ -54,7 +53,6 @@ test("source preference is explicit, with actual date, and never pools devices",
   assert.equal(preferredSource(pointsFor(logs, fat)), acc);
   assert.equal(latestReference(logs, fat).v, 20);
   assert.equal(latestReference(logs, fat).t, dayStamp("2030-01-01"));
-  assert.match(projectTrend(pointsFor(logs, fat)).reason, /one device/);
 });
 test("calendar grouping preserves recorded local dates across timezone offsets", () => {
   assert.equal(dayStamp("2030-01-01T01:00:00+08:00"), Date.UTC(2030, 0, 1));
@@ -72,27 +70,6 @@ test("smoothing takes daily medians and keeps device histories separate", () => 
   assert.equal(smoothed.find((p) => p.t === 2 * DAY).v, 21);
   assert.equal(smoothed.find((p) => p.source === acc).v, 100);
   assert.equal(smoothed.at(-1).v, 50);
-});
-test("projection enforces sample count, spacing, recency, source and horizon gates", () => {
-  const now = Date.UTC(2030, 4, 1);
-  const ps = Array.from({ length: 8 }, (_, i) => ({
-    t: now - (49 - i * 7) * DAY,
-    v: 70 - i * 0.1,
-    source: tan,
-  }));
-  const p = projectTrend(ps, now, 200);
-  assert.equal(p.n, 8);
-  assert.equal(p.points.length, 29);
-  assert.ok(Math.abs(p.slopePerWeek + 0.1) < 1e-9);
-  assert.ok(p.points.every((p) => p.low <= p.v && p.v <= p.high));
-  assert.match(projectTrend(ps.slice(0, 3), now).reason, /6 measurement/);
-  assert.match(
-    projectTrend(
-      ps.map((p) => ({ ...p, t: p.t - 40 * DAY })),
-      now,
-    ).reason,
-    /30 days/,
-  );
 });
 test("comparison pairs values from the same record, never nearest records or other devices", () => {
   const logs = Array.from({ length: 4 }, (_, i) =>
