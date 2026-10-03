@@ -1,5 +1,5 @@
 import { CONFIG, configProblems } from './config.js';
-import { importUploadedFile } from './src/import-router.js?v=6';
+import { importUploadedFile } from './src/import-router.js?v=9';
 import {
   saveLog,
   saveLogs,
@@ -32,7 +32,10 @@ import {
   cropIndicatorCanvas,
   preserveReviewedIndicators,
 } from './src/tanita-indicator-review.js?v=2';
-import { cleanPhysiqueRating } from './src/text-field-repair.js?v=2';
+import { cleanPhysiqueRating } from './src/text-field-repair.js?v=3';
+import { mergeHealthWorkouts } from './src/health-records.js?v=2';
+import { createVisualiser } from './src/visualiser.js?v=2';
+import { readableFieldLabel, recordEditorPathVisible } from './src/record-view.js?v=2';
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -54,6 +57,7 @@ let currentPreviewCanvas = null;
 let indicatorRegions = {};
 let logsCache = [];
 let editingLog = null;
+let visualiser = null;
 
 const commonBodyFields = [
   ['measured_at_local', 'Measured at', 'text'],
@@ -423,9 +427,10 @@ function applyBodyForm() {
 }
 
 function renderHealthReview(logs) {
+  logs = mergeHealthWorkouts(logsCache, logs);
   pendingHealthLogs = logs;
   if (!logs.length) {
-    $('#import-status').textContent = 'Apple Health was detected, but no Traditional Strength Training workouts were found.';
+    $('#import-status').textContent = 'Apple Health was detected, but no workouts were found.';
     return;
   }
 
@@ -434,13 +439,15 @@ function renderHealthReview(logs) {
   const last = ordered.at(-1)?.start_at;
   const withHr = logs.filter((item) => item.heart_rate_bpm?.average_bpm != null).length;
   const withSamples = logs.filter((item) => Array.isArray(item.heart_rate_bpm?.samples) && item.heart_rate_bpm.samples.length).length;
+  const activeCount=logs.filter(l=>Number.isFinite(l.active_energy_kcal)).length,restingCount=logs.filter(l=>Number.isFinite(l.basal_energy_kcal)).length,routeCount=logs.filter(l=>l.route?.points?.length).length;
   const sampleCount = logs.reduce((sum, item) => sum + (Array.isArray(item.heart_rate_bpm?.samples) ? item.heart_rate_bpm.samples.length : 0), 0);
 
   $('#health-summary').innerHTML = `
-    <p><strong>${logs.length}</strong> Traditional Strength Training workout${logs.length === 1 ? '' : 's'} found.</p>
+    <p><strong>${logs.length}</strong> workout${logs.length === 1 ? '' : 's'} found.</p>
     <p>${escapeHtml(first || '')} → ${escapeHtml(last || '')}</p>
     <p>Heart-rate summary available for ${withHr} workout${withHr === 1 ? '' : 's'}.</p>
     <p>Raw heart-rate readings: <strong>${sampleCount.toLocaleString()}</strong> across ${withSamples} workout${withSamples === 1 ? '' : 's'}.</p>
+    <p>Active calories: ${activeCount} sessions · resting calories: ${restingCount} · routes: ${routeCount}.</p>
     <p class="muted compact">Re-importing a full export updates existing workout IDs instead of duplicating them.</p>`;
 
   $('#health-review').hidden = false;
@@ -470,6 +477,7 @@ function summaryForLog(log) {
 
 function renderLogs(logs) {
   logsCache = sortLogs(logs).reverse();
+  visualiser?.update(logsCache);
   $('#log-count').textContent = String(logsCache.length);
 
   const body = $('#logs-body');
@@ -665,7 +673,8 @@ function openRecordEditor(log) {
     field.className = 'field record-field';
 
     const label = document.createElement('label');
-    label.textContent = entry.path;
+    label.textContent = readableFieldLabel(entry.path);
+    field.hidden = !recordEditorPathVisible(entry.path);
 
     let input;
     if (entry.kind === 'json') {
@@ -749,6 +758,7 @@ $('#signout-github').addEventListener('click', () => {
   clearAuth();
   signedInUser = null;
   resetImportReview();
+  renderLogs([]);
   showAuthGate('GitHub token forgotten on this browser. Your repository data is unchanged.');
 });
 
@@ -891,4 +901,5 @@ $('#clear-logs').addEventListener('click', async () => {
   }
 });
 
+visualiser = createVisualiser({ onEditRecord: openRecordEditor });
 await bootstrapAuth();

@@ -52,7 +52,7 @@ function cleanCandidate(value = '') {
 }
 
 function cleanPhysiqueRating(value = '') {
-  return String(value).replace(/[^\p{L}\s]/gu, '').replace(/\s+/g, ' ').trim();
+  return String(value).replace(/\s*[\\*]+\s*$/g, '').replace(/\s+/g, ' ').trim();
 }
 
 function bestMatch(text, pattern) {

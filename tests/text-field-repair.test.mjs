@@ -18,6 +18,7 @@ test('removes receipt markers from physique ratings while keeping words apart', 
 });
 
 test('keeps previously unencountered TANITA text values intact', () => {
+  assert.equal(cleanPhysiqueRating('Over-fat level 2 / custom'), 'Over-fat level 2 / custom');
   const raw = `INPUT BODY TYPE PERFORMANCE CUSTOM GENDER X-CUSTOM AGE 26 HEIGHT 178 CLOTHES WEIGHT 0.5 RESULT`;
   const fields = recoverTextFields(raw, 'TANITA');
   assert.equal(fields.find((field) => field.path === 'input.body_type')?.value, 'PERFORMANCE CUSTOM');

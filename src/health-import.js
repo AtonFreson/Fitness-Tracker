@@ -1,8 +1,11 @@
-import { openAppleHealthExportZip } from './zip-reader.js';
+import { openAppleHealthExportZip } from './zip-reader.js?v=4';
+
+import { energyKcal, distanceKm, derivedWorkoutFields, parseWorkoutRoute } from './workout-details.js';
 
 const TARGET_WORKOUT = 'HKWorkoutActivityTypeTraditionalStrengthTraining';
 const HEART_RATE = 'HKQuantityTypeIdentifierHeartRate';
 const ACTIVE_ENERGY = 'HKQuantityTypeIdentifierActiveEnergyBurned';
+const BASAL_ENERGY = 'HKQuantityTypeIdentifierBasalEnergyBurned';
 
 function decodeXml(value = '') {
   return value
@@ -38,48 +41,65 @@ function round1(value) {
   return Math.round(Number(value) * 10) / 10;
 }
 
-async function streamTags(file, onTag) {
+async function streamTags(file, onTag, onProgress, phase) {
   const reader = file.stream().getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
-  while (true) {
+  let bytesRead = 0;
+  let lastProgress = 0;
+  try { while (true) {
     const { value, done } = await reader.read();
+    bytesRead += value?.byteLength || 0;
     buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
     let end;
     while ((end = buffer.indexOf('>')) >= 0) {
       const chunk = buffer.slice(0, end + 1);
       buffer = buffer.slice(end + 1);
       const start = chunk.lastIndexOf('<');
-      if (start >= 0) await onTag(chunk.slice(start));
+      if (start >= 0) onTag(chunk.slice(start));
     }
     if (done) break;
-    if (buffer.length > 2_000_000 && !buffer.includes('<')) buffer = buffer.slice(-4096);
+    if (buffer.length > 2_000_000) throw new Error('The Health XML contains an invalid or excessively long tag.');
+    if (Date.now() - lastProgress >= 250) {
+      onProgress?.(`${phase}: ${Math.min(100, Math.round(bytesRead / file.size * 100))}% · ${Math.round(bytesRead / 1e6)} MB read…`);
+      lastProgress = Date.now();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  } } finally {
+    try { await reader.cancel(); } catch {}
+    reader.releaseLock();
   }
 }
 
 function workoutFromAttrs(values) {
   const startAt = normalizeAppleDate(values.startDate);
   const endAt = normalizeAppleDate(values.endDate);
-  const totalEnergy = Number(values.totalEnergyBurned);
   return {
+    activity_type: values.workoutActivityType,
+    attributes: values,
+    metadata: {}, statistics: [], events: [], extra_fields: [], route_files: [],
     start_at: startAt,
     end_at: endAt,
     start_ms: Date.parse(startAt),
     end_ms: Date.parse(endAt),
     duration_minutes: durationMinutes(values.duration, values.durationUnit),
-    active_energy_kcal: Number.isFinite(totalEnergy) && /kcal/i.test(values.totalEnergyBurnedUnit || '') ? totalEnergy : null,
+    active_energy_kcal: energyKcal(values.totalEnergyBurned, values.totalEnergyBurnedUnit),
+    basal_energy_kcal: null,
+    distance_km: distanceKm(values.totalDistance, values.totalDistanceUnit),
     heart_rate_summary: null,
   };
 }
 
-async function collectStrengthWorkouts(file, onProgress) {
+async function collectWorkouts(file, onProgress) {
   const workouts = [];
   let current = null;
+  let inRoute = false;
 
   await streamTags(file, (tag) => {
     if (tag.startsWith('<Workout ')) {
       const values = attrs(tag);
-      current = values.workoutActivityType === TARGET_WORKOUT ? workoutFromAttrs(values) : null;
+      current = workoutFromAttrs(values);
+      inRoute = false;
       if (current && tag.endsWith('/>')) {
         workouts.push(current);
         current = null;
@@ -87,11 +107,27 @@ async function collectStrengthWorkouts(file, onProgress) {
       return;
     }
 
+    if (current && /^<WorkoutRoute\b/.test(tag)) {inRoute = true; current.extra_fields.push({tag:'WorkoutRoute',...attrs(tag)}); return;}
+    if (tag.startsWith('</WorkoutRoute>')) {inRoute = false; return;}
+    if (current && tag.startsWith('<MetadataEntry ')) {
+      const v = attrs(tag);
+      if (!inRoute) current.metadata[v.key] = v.value;
+      else current.extra_fields.push({tag:'Route metadata', ...v});
+      return;
+    }
+    if (current && tag.startsWith('<FileReference ')) {current.route_files.push(attrs(tag).path); return;}
+    if (current && tag.startsWith('<WorkoutEvent ')) {current.events.push(attrs(tag)); return;}
+    if (current && /^<Workout(Zone|ZoneGroup|Activity)\b/.test(tag)) {
+      current.extra_fields.push({tag:tag.match(/^<([\w]+)/)[1], ...attrs(tag)}); return;
+    }
     if (current && tag.startsWith('<WorkoutStatistics ')) {
       const values = attrs(tag);
-      if (values.type === ACTIVE_ENERGY) {
-        const amount = Number(values.sum);
-        if (Number.isFinite(amount) && (!values.unit || /kcal/i.test(values.unit))) current.active_energy_kcal = amount;
+      current.statistics.push(values);
+      if (values.type === ACTIVE_ENERGY || values.type === BASAL_ENERGY) {
+        const field = values.type === ACTIVE_ENERGY ? "active_energy_kcal" : "basal_energy_kcal";
+        current[field] = energyKcal(values.sum, values.unit);
+      } else if (/^HKQuantityTypeIdentifierDistance/.test(values.type)) {
+        current.distance_km = distanceKm(values.sum, values.unit);
       } else if (values.type === HEART_RATE) {
         const average = Number(values.average);
         const min = Number(values.minimum);
@@ -105,12 +141,14 @@ async function collectStrengthWorkouts(file, onProgress) {
       return;
     }
 
-    if (tag.startsWith('</Workout')) {
+    if (current && /^<[A-Za-z]/.test(tag)) current.extra_fields.push({tag:tag.match(/^<([\w:]+)/)[1],...attrs(tag)});
+
+    if (/^<\/Workout\s*>/.test(tag)) {
       if (current) workouts.push(current);
       current = null;
-      if (onProgress && workouts.length && workouts.length % 25 === 0) onProgress(`Found ${workouts.length} strength workouts…`);
+      if (onProgress && workouts.length && workouts.length % 25 === 0) onProgress(`Found ${workouts.length} workouts…`);
     }
-  });
+  }, onProgress, 'Pass 1/2 · finding workouts');
 
   return workouts.sort((a, b) => a.start_ms - b.start_ms);
 }
@@ -146,6 +184,7 @@ async function enrichWithRecords(file, workouts, onProgress) {
 
   await streamTags(file, (tag) => {
     if (!tag.startsWith('<Record ')) return;
+    if (!tag.includes(HEART_RATE) && !tag.includes(ACTIVE_ENERGY)) return;
     const values = attrs(tag);
     if (values.type !== HEART_RATE && values.type !== ACTIVE_ENERGY) return;
 
@@ -181,7 +220,7 @@ async function enrichWithRecords(file, workouts, onProgress) {
     }
 
     if (onProgress && matched % 5000 === 0) onProgress(`Matched ${matched.toLocaleString()} workout records…`);
-  });
+  }, onProgress, 'Pass 2/2 · matching heart rate');
 
   return workouts.map((workout, index) => {
     const summary = summaries[index];
@@ -208,17 +247,26 @@ async function enrichWithRecords(file, workouts, onProgress) {
 }
 
 function toWorkoutLog(workout) {
+  const type = String(workout.activity_type || 'Workout').replace(/^HKWorkoutActivityType/, '').replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase();
+  const idType = workout.activity_type === TARGET_WORKOUT ? 'strength' : type;
   return {
     schema_version: 1,
-    id: `apple-health:strength:${workout.start_at}`,
-    kind: 'workout',
-    workout_type: 'traditional_strength_training',
-    start_at: workout.start_at,
-    end_at: workout.end_at,
+    id: `apple-health:${idType}:${workout.start_at}`,
+    kind: 'workout', workout_type: type,
+    start_at: workout.start_at, end_at: workout.end_at,
     duration_minutes: workout.duration_minutes,
     active_energy_kcal: workout.active_energy_kcal,
+    basal_energy_kcal: workout.basal_energy_kcal,
+    distance_km: workout.distance_km,
     heart_rate_bpm: workout.heart_rate,
-    source: { type: 'apple_health_export' },
+    ...derivedWorkoutFields(workout),
+    ...(workout.route ? {route:workout.route} : {}),
+    ...(workout.route_warning ? {route_warning:workout.route_warning} : {}),
+    health_metadata: workout.metadata,
+    workout_events: workout.events.map(e=>({...e,at:normalizeAppleDate(e.date)})),
+    workout_statistics: workout.statistics,
+    health_details: {attributes: workout.attributes, extra_fields: workout.extra_fields, route_files: workout.route_files},
+    source: {type:'apple_health_export', ...(workout.attributes.sourceName ? {app:workout.attributes.sourceName} : {})},
   };
 }
 
@@ -226,11 +274,26 @@ async function importAppleHealthXml(file, { onProgress } = {}) {
   if (!/\.xml$/i.test(file.name || '') && !/xml/i.test(file.type || '')) {
     throw new Error('Choose Apple Health export.xml or an Apple Health export ZIP.');
   }
-  onProgress?.('Pass 1/2: finding Traditional Strength Training workouts…');
-  const workouts = await collectStrengthWorkouts(file, onProgress);
+  onProgress?.('Pass 1/2: finding workouts…');
+  const workouts = await collectWorkouts(file, onProgress);
   if (!workouts.length) return [];
-  onProgress?.(`Found ${workouts.length} strength workouts. Pass 2/2: matching heart-rate and energy records…`);
-  return (await enrichWithRecords(file, workouts, onProgress)).map(toWorkoutLog);
+  onProgress?.(`Found ${workouts.length} workouts. Pass 2/2: matching heart-rate and energy records…`);
+  const enriched = await enrichWithRecords(file, workouts, onProgress);
+  for (const w of enriched) {
+    for (const path of w.route_files) {
+      try {
+        const routeFile = await file.openFile?.(path);
+        if (!routeFile) {w.route_warning = 'The linked route file is missing. Import the complete Health ZIP to include it.'; continue;}
+        onProgress?.('Reading workout route…');
+        const route = await parseWorkoutRoute(routeFile);
+        w.route ||= {points:[],point_count:0};
+        const offset = (w.route.points.at(-1)?.segment ?? -1)+1;
+        w.route.points=w.route.points.concat(route.points.map(p=>({...p,segment:p.segment+offset})));
+        w.route.point_count=w.route.points.length;
+      } catch(error) {w.route_warning=error.message;}
+    }
+  }
+  return enriched.map(toWorkoutLog);
 }
 
 async function importAppleHealthFile(file, { onProgress } = {}) {

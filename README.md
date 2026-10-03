@@ -2,11 +2,25 @@
 
 Phone-friendly tracker hosted on GitHub Pages, with fitness data stored in a separate private GitHub repository.
 
+## Visualiser
+- **Summary** — composition reference, recent training and latest records
+- **Body** — dated device snapshots, every numeric metric, unrestricted report wording and nearby device comparisons
+- **Training** — consistency calendar, recorded time/energy and activity filters, session heart-rate inspection, recorded zones, routes and session details
+- **Explore** — date ranges, chart scrubbing, per-device smoothing, paired comparisons, a source-weighted Kalman body model with conditional predictions and a composition scenario calculator
+- **Data** — import, review, edit, sync, filter, export and delete records
+
+ACCUNIQ is the preferred composition reference. Raw device histories remain separate. The joint body model estimates device offsets and measurement uncertainty. See [design and analytics methods](docs/visualiser-design.md) for the research, assumptions and data requirements.
+
 ## Imports
 - TANITA DC-360 PDF/image scans using Google Cloud Vision OCR with an isolated local fallback
 - ACCUNIQ reports
 - Apple Health `export.xml` or the original export ZIP
-- Traditional Strength Training workouts with active energy and timestamped heart-rate samples
+- All exported workout types, with active/resting calories, timestamped heart rate, recorded zones, pauses, distance, effort, weather and complete metadata
+- Linked GPX routes from the ZIP, with an interactive route view, elevation and speed; explicit single-location metadata is supported
+
+Health ZIPs are read in bounded chunks and parsed in a background worker. Re-importing retains and deduplicates older heart-rate samples even if the newer export omits them. The ZIP fallback is bundled locally.
+
+Street-map tiles load from OpenStreetMap only when requested. Missing coordinates are never inferred from weather or nearby sessions.
 
 The private data repository stores deduplicated logs in monthly JSON files under `data/events/`.
 
