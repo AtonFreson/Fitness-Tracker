@@ -24,6 +24,12 @@ Street-map tiles load from OpenStreetMap only when requested. Missing coordinate
 
 The private data repository stores deduplicated logs in monthly JSON files under `data/events/`.
 
+## Manual measurements
+
+Open **Data → Import → Enter measurement manually** for a one-off system or a reading without a file. Set the measurement date/time, optionally name the system/device, and fill in any available fields. The form includes all supported body metrics, personal context, targets, classifications, reference ranges and bioelectrical values. Only the date and at least one report value are required; blank fields remain missing.
+
+Manual measurements save to the same private monthly records and appear in Body, Explore and the record log. Choose **View / edit** to add more fields later. Separate entries at the same time remain separate records. Manual readings are labelled separately and do not enter the calibrated TANITA/ACCUNIQ body forecast model.
+
 ## Batch receipt scans
 
 Choose **Batch-scan TANITA receipts** to separate several receipts from one photo. Keep small gaps between receipts and all corners visible against a contrasting surface.

@@ -34,8 +34,12 @@ import {
 } from './src/tanita-indicator-review.js?v=2';
 import { cleanPhysiqueRating } from './src/text-field-repair.js?v=3';
 import { mergeHealthWorkouts } from './src/health-records.js?v=2';
-import { createVisualiser } from './src/visualiser.js?v=2';
+import { createVisualiser } from './src/visualiser.js?v=3';
 import { readableFieldLabel, recordEditorPathVisible } from './src/record-view.js?v=2';
+
+import { commonBodyFields, tanitaReviewFields, accuniqFields } from './src/body-fields.js';
+import { createManualEntry } from './src/manual-entry.js';
+import { manualFields, fieldValue } from './src/manual-measurement.js';
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -58,85 +62,6 @@ let indicatorRegions = {};
 let logsCache = [];
 let editingLog = null;
 let visualiser = null;
-
-const commonBodyFields = [
-  ['measured_at_local', 'Measured at', 'text'],
-  ['metrics.weight_kg', 'Weight (kg)', 'number'],
-  ['metrics.fat_percent', 'Body fat (%)', 'number'],
-  ['metrics.fat_mass_kg', 'Fat mass (kg)', 'number'],
-  ['metrics.ffm_kg', 'Fat-free mass (kg)', 'number'],
-  ['metrics.muscle_mass_kg', 'Muscle mass (kg)', 'number'],
-];
-
-const tanitaReviewFields = [
-  ['input.body_type', 'Body type', 'text'],
-  ['input.gender', 'Gender', 'text'],
-  ['input.age', 'Age', 'number'],
-  ['input.height_cm', 'Height (cm)', 'number'],
-  ['input.clothes_weight_kg', 'Clothes weight (kg)', 'number'],
-  ['measured_at_local', 'Measured at', 'text'],
-
-  ['metrics.weight_kg', 'Weight (kg)', 'number'],
-  ['metrics.fat_percent', 'Body fat (%)', 'number'],
-  ['metrics.fat_mass_kg', 'Fat mass (kg)', 'number'],
-  ['metrics.ffm_kg', 'Fat-free mass (kg)', 'number'],
-  ['metrics.muscle_mass_kg', 'Muscle mass (kg)', 'number'],
-  ['metrics.tbw_kg', 'TBW (kg)', 'number'],
-  ['metrics.tbw_percent', 'TBW (%)', 'number'],
-  ['metrics.bone_mass_kg', 'Bone mass (kg)', 'number'],
-  ['metrics.bmr_kj', 'BMR (kJ)', 'number'],
-  ['metrics.bmr_kcal', 'BMR (kcal)', 'number'],
-  ['metrics.metabolic_age', 'Metabolic age', 'number'],
-  ['metrics.visceral_fat_rating', 'Visceral fat rating', 'number'],
-  ['metrics.bmi', 'BMI', 'number'],
-  ['metrics.ideal_body_weight_kg', 'Ideal body weight (kg)', 'number'],
-  ['metrics.degree_of_obesity_percent', 'Degree of obesity (%)', 'number'],
-
-  ['reference_ranges.fat_percent.min', 'Fat % range min', 'number'],
-  ['reference_ranges.fat_percent.max', 'Fat % range max', 'number'],
-  ['reference_ranges.fat_mass_kg.min', 'Fat mass range min (kg)', 'number'],
-  ['reference_ranges.fat_mass_kg.max', 'Fat mass range max (kg)', 'number'],
-
-  ['indicators.fat_percent.reading', 'Fat % indicator', 'text'],
-  ['indicators.bmi.reading', 'BMI indicator', 'text'],
-  ['indicators.muscle_mass.reading', 'Muscle mass indicator', 'text'],
-  ['indicators.bmr.reading', 'BMR indicator', 'text'],
-  ['qualitative.physique_rating', 'Physique rating', 'text'],
-
-  ['bioelectrical.6.25_khz.r_ohm', 'R 6.25 kHz (Ω)', 'number'],
-  ['bioelectrical.50_khz.r_ohm', 'R 50 kHz (Ω)', 'number'],
-  ['bioelectrical.6.25_khz.x_ohm', 'X 6.25 kHz (Ω)', 'number'],
-  ['bioelectrical.50_khz.x_ohm', 'X 50 kHz (Ω)', 'number'],
-];
-
-const accuniqFields = [
-  ['metrics.body_water_l', 'Body water (L)', 'number'],
-  ['metrics.protein_kg', 'Protein (kg)', 'number'],
-  ['metrics.minerals_kg', 'Minerals (kg)', 'number'],
-  ['metrics.bmr_kcal', 'BMR (kcal)', 'number'],
-  ['metrics.tdee_kcal', 'TDE (kcal)', 'number'],
-  ['metrics.physical_age', 'Physical age', 'number'],
-  ['analysis.score', 'Analysis score', 'number'],
-  ['qualitative.body_type', 'Body type', 'text'],
-  ['targets.target_weight_kg', 'Target weight (kg)', 'number'],
-  ['targets.weight_control_kg', 'Weight control (kg)', 'number'],
-  ['targets.muscle_control_kg', 'Muscle control (kg)', 'number'],
-  ['targets.fat_control_kg', 'Fat control (kg)', 'number'],
-  ['reference_ranges.body_water_l.min', 'Body water range min (L)', 'number'],
-  ['reference_ranges.body_water_l.max', 'Body water range max (L)', 'number'],
-  ['reference_ranges.protein_kg.min', 'Protein range min (kg)', 'number'],
-  ['reference_ranges.protein_kg.max', 'Protein range max (kg)', 'number'],
-  ['reference_ranges.minerals_kg.min', 'Minerals range min (kg)', 'number'],
-  ['reference_ranges.minerals_kg.max', 'Minerals range max (kg)', 'number'],
-  ['reference_ranges.muscle_mass_kg.min', 'Muscle mass range min (kg)', 'number'],
-  ['reference_ranges.muscle_mass_kg.max', 'Muscle mass range max (kg)', 'number'],
-  ['reference_ranges.ffm_kg.min', 'FFM range min (kg)', 'number'],
-  ['reference_ranges.ffm_kg.max', 'FFM range max (kg)', 'number'],
-  ['reference_ranges.fat_mass_kg.min', 'Fat mass range min (kg)', 'number'],
-  ['reference_ranges.fat_mass_kg.max', 'Fat mass range max (kg)', 'number'],
-  ['reference_ranges.weight_kg.min', 'Weight range min (kg)', 'number'],
-  ['reference_ranges.weight_kg.max', 'Weight range max (kg)', 'number'],
-];
 
 const indicatorKeys = ['fat_percent', 'bmi', 'muscle_mass', 'bmr'];
 
@@ -180,6 +105,7 @@ function sourceLabel(log) {
   if (type === 'tanita_receipt') return 'TANITA DC-360';
   if (type === 'accuniq_report') return 'ACCUNIQ';
   if (type === 'apple_health_export') return 'Apple Health';
+  if (type === 'manual_entry') return log.source.device || 'Manual entry';
   return log?.source?.device || type || 'Unknown';
 }
 
@@ -457,11 +383,15 @@ function renderHealthReview(logs) {
 function summaryForLog(log) {
   if (log.kind === 'body_composition') {
     const metrics = log.metrics || {};
-    return [
+    const summary = [
       metrics.weight_kg != null ? `${metrics.weight_kg} kg` : null,
       metrics.fat_percent != null ? `${metrics.fat_percent}% fat` : null,
       metrics.muscle_mass_kg != null ? `${metrics.muscle_mass_kg} kg muscle` : null,
     ].filter(Boolean).join(' · ');
+    return summary || (log.source?.type === 'manual_entry'
+      ? manualFields.filter(([path]) => fieldValue(log, path) != null).slice(0, 2)
+        .map(([path, label]) => `${label}: ${fieldValue(log, path)}`).join(' · ')
+      : '');
   }
 
   if (log.kind === 'workout') {
@@ -661,6 +591,10 @@ async function bootstrapAuth() {
 }
 
 function openRecordEditor(log) {
+  if (log.source?.type === 'manual_entry') {
+    manualEntry.open(log);
+    return;
+  }
   editingLog = deepClone(log);
   $('#record-title').textContent = `${sourceLabel(log)} · ${log.measured_at_local || log.start_at || 'record'}`;
   $('#record-status').textContent = '';
@@ -743,6 +677,17 @@ async function saveRecordEditor() {
     setBusy(button, false);
   }
 }
+
+const manualEntry = createManualEntry({
+  async onSave(log, previous) {
+    await saveLog(log);
+    if (previous && previous.id !== log.id) await deleteLog(previous.id);
+    logsCache = mergeLogs(logsCache.filter((item) => item.id !== previous?.id), [log]);
+    renderLogs(logsCache);
+    refreshLogs('Manual measurement saved.').catch((error) => { $('#log-status').textContent = error.message; });
+  },
+});
+$('#manual-entry').addEventListener('click', () => manualEntry.open());
 
 $('#connect-github').addEventListener('click', connectWithToken);
 $('#github-token').addEventListener('keydown', (event) => {

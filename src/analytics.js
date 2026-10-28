@@ -1,5 +1,9 @@
 export const DAY = 86_400_000;
 export const SOURCES = {
+  manual_entry: {
+    label: "Manual entry", short: "Manual", color: "#39877b",
+    method: "Manually entered measurement",
+  },
   accuniq_report: {
     label: "ACCUNIQ",
     short: "ACCUNIQ",
