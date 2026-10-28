@@ -183,3 +183,16 @@
     order: 3;
   }
 }
+
+.manual-dialog { width: min(760px, calc(100% - 24px)); }
+.manual-dialog .field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.manual-dialog .field { min-width: 0; }
+.manual-dialog input, .manual-dialog textarea { width: 100%; min-width: 0; }
+.manual-dialog details { border-top: 1px solid var(--line); padding: 14px 0; }
+.manual-dialog summary { cursor: pointer; font-weight: 650; padding: 8px 0; }
+.manual-dialog .manual-context { margin-bottom: 20px; }
+.manual-dialog .dialog-footer { margin-top: 8px; }
+@media (max-width: 600px) {
+  .manual-dialog .field-grid { grid-template-columns: minmax(0, 1fr); }
+  .manual-dialog .dialog-heading h2 { font-size: 1.3rem; }
+}

@@ -27,7 +27,7 @@ import {
   heartRateDistribution,
   qualitativeHistory,
   recordIssues,
-} from "./analytics.js?v=2";
+} from "./analytics.js?v=3";
 import {
   escapeHtml as esc,
   formatNumber as num,
@@ -247,7 +247,7 @@ export function createVisualiser({ onEditRecord } = {}) {
     if (!all.length) {
       root().innerHTML = empty(
         "Body composition",
-        "Import a TANITA receipt or an ACCUNIQ report.",
+        "Import a report or enter a measurement manually.",
       );
       return;
     }
@@ -291,7 +291,7 @@ export function createVisualiser({ onEditRecord } = {}) {
           `<option value="${esc(l.id)}" ${l.id === log.id ? "selected" : ""}>${date(dayStamp(logDate(l)), true)}</option>`,
       )
       .join("")}</select></label></div>
-      <div class="body-grid"><section class="panel composition-panel">${heading("Composition")}<p class="overline">${esc(SOURCES[state.bodySource]?.method || "")} · ${date(dayStamp(logDate(log)), true)}</p><div class="hero-reading"><strong>${num(m.weight_kg)}<small>kg</small></strong><span>Total weight</span></div>
+      <div class="body-grid"><section class="panel composition-panel">${heading("Composition")}<p class="overline">${esc(log.source?.type === "manual_entry" ? log.source.device : SOURCES[state.bodySource]?.method || "")} · ${date(dayStamp(logDate(log)), true)}</p><div class="hero-reading"><strong>${num(m.weight_kg)}<small>kg</small></strong><span>Total weight</span></div>
         ${valid ? `<div class="composition-bar" role="img" aria-label="Fat ${num(fat)} kg; fat-free mass ${num(lean)} kg"><span style="width:${fatShare}%;background:var(--body-color)"></span><span style="width:${100 - fatShare}%;background:var(--lean-color)"></span></div><div class="composition-key"><div><i style="background:var(--body-color)"></i><span>Fat<strong>${num(fat)} <small>kg</small></strong></span></div><div><i style="background:var(--lean-color)"></i><span>Fat-free mass<strong>${num(lean)} <small>kg</small></strong></span></div></div>` : "<p>Fat and fat-free mass are not both available in this report.</p>"}
         <p class="panel-note">Muscle and body water are included within fat-free mass; they are not additional parts of total weight.</p><button type="button" class="text-button" data-record="${esc(log.id)}">View full measurement ›</button></section>
       <section class="panel reported-panel">${heading("As reported")}${words.length ? words.map(([key, value]) => `<div class="reported-word"><span>${esc(humanize(key))}</span><p>${esc(value)}</p></div>`).join("") : "<p>No classification text in this report.</p>"}<p class="panel-note">Original wording from the device. Labels are preserved without assigning a score.</p><details><summary>Classification history</summary><div class="word-history">${qualitativeHistory(
@@ -436,7 +436,7 @@ export function createVisualiser({ onEditRecord } = {}) {
       sources = [...new Set(ps.map((p) => p.source))];
     if (onlyOne && (state.source === "all" || !sources.includes(state.source)))
       state.source = preferredSource(ps);
-    return `<div class="segmented source-control" role="group" aria-label="Data source">${(!onlyOne && sources.length > 1 ? ["all", ...sources] : sources).map((s) => `<button type="button" data-explore-source="${esc(s)}" aria-pressed="${state.source === s || (state.source === "all" && sources.length === 1)}">${s === "all" ? "Both devices" : esc(sourceName(s))}</button>`).join("")}</div>`;
+    return `<div class="segmented source-control" role="group" aria-label="Data source">${(!onlyOne && sources.length > 1 ? ["all", ...sources] : sources).map((s) => `<button type="button" data-explore-source="${esc(s)}" aria-pressed="${state.source === s || (state.source === "all" && sources.length === 1)}">${s === "all" ? "All sources" : esc(sourceName(s))}</button>`).join("")}</div>`;
   }
   function explore() {
     if (!catalog.length) {
@@ -703,7 +703,7 @@ export function createVisualiser({ onEditRecord } = {}) {
     $("#insight-title").textContent =
       log.kind === "workout"
         ? workoutLabel(log)
-        : sourceName(log.source?.type);
+        : log.source?.device || sourceName(log.source?.type);
     $("#insight-subtitle").textContent =
       `${date(dayStamp(logDate(log)), true)} · ${logDate(log).slice(11, 16)}`;
     $("#insight-edit").onclick = () => {
@@ -786,7 +786,7 @@ export function createVisualiser({ onEditRecord } = {}) {
         )
         .join(
           "",
-        )}<p class="panel-note">${esc(log.source?.filename || "")}</p></details>`;
+        )}<p class="panel-note">${esc(log.source?.filename || "")}</p></details>${log.notes ? `<p class="panel-note">${esc(log.notes)}</p>` : ""}`;
     }
   }
   function render() {
